@@ -179,15 +179,40 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
   const [isSubmittingPayment, setIsSubmittingPayment] = useState<boolean>(false);
 
   // Form State Buat PO Baru (Mendukung Multi-Item Keranjang)
-  const [newPoForm, setNewPoForm] = useState({
+  interface NewPoFormState {
+    supplierName: string;
+    supplierPhone: string;
+    supplierWhatsapp: string;
+    supplierAddress: string;
+    orderDate?: string;
+    expectedDeliveryDate: string;
+    notes: string;
+    paymentTerms: string;
+    paymentStatus: "UNPAID" | "PARTIAL" | "PAID";
+    paidAmount: number;
+    taxRate: number;
+    taxCategory: string;
+    taxLegalBasis: string;
+    items: Array<{
+      id: string;
+      productId: string;
+      productName: string;
+      quantity: number;
+      unit: string;
+      unitPrice: number;
+    }>;
+  }
+
+  const [newPoForm, setNewPoForm] = useState<NewPoFormState>({
     supplierName: "",
     supplierPhone: "",
     supplierWhatsapp: "",
     supplierAddress: "",
+    orderDate: new Date().toISOString().slice(0, 10),
     expectedDeliveryDate: "",
     notes: "",
     paymentTerms: "TEMPO_30", // CASH, COD, TEMPO_14, TEMPO_30, TEMPO_60, DP_50
-    paymentStatus: "UNPAID" as "UNPAID" | "PARTIAL" | "PAID",
+    paymentStatus: "UNPAID",
     paidAmount: 0,
     taxRate: initialData.taxSetting?.rate || 12,
     taxCategory: "STANDAR_12",
@@ -1098,6 +1123,7 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
         supplierPhone: newPoForm.supplierPhone || undefined,
         supplierWhatsapp: newPoForm.supplierWhatsapp || undefined,
         supplierAddress: newPoForm.supplierAddress || undefined,
+        orderDate: newPoForm.orderDate || undefined,
         expectedDeliveryDate: newPoForm.expectedDeliveryDate || undefined,
         notes: newPoForm.notes,
         createdBy: currentStaff?.name || "Tim Purchasing",
@@ -1133,6 +1159,7 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
         supplierPhone: "",
         supplierWhatsapp: "",
         supplierAddress: "",
+        orderDate: new Date().toISOString().slice(0, 10),
         expectedDeliveryDate: "",
         notes: "",
         paymentTerms: "TEMPO_30",
@@ -1202,6 +1229,13 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
       hour: "2-digit",
       minute: "2-digit",
     });
+  };
+
+  const formatTime = (dateVal: any) => {
+    if (!dateVal) return "-";
+    const d = new Date(dateVal);
+    if (isNaN(d.getTime())) return "-";
+    return d.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }) + " WIB";
   };
 
   const formatRelativeTime = (dateVal: any) => {
@@ -2169,9 +2203,17 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                               </span>
                             )}
                           </div>
-                          <p className="text-[10px] text-slate-500 mt-0.5">
-                            {po.items.length} Barang • Diterbitkan {formatDate(po.createdAt)} oleh {po.createdBy}
-                          </p>
+                          <div className="flex flex-wrap items-center gap-2 mt-1">
+                            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-800 bg-white border border-slate-200 px-2 py-0.5 rounded-md shadow-2xs">
+                              <Calendar className="w-3 h-3 text-emerald-600" />
+                              <span>Dibuat: {formatDate(po.createdAt)}</span>
+                              <span className="text-slate-300">•</span>
+                              <span className="text-slate-500 font-normal">{formatTime(po.createdAt)}</span>
+                            </span>
+                            <span className="text-[10px] text-slate-500">
+                              {po.items.length} Barang • Oleh {po.createdBy}
+                            </span>
+                          </div>
                         </div>
                       </div>
 
@@ -2571,7 +2613,13 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
               <table className="w-full text-left text-xs">
                 <thead className="bg-slate-50 text-slate-600 font-semibold uppercase tracking-wider text-[10px]">
                   <tr>
-                    <th className="p-3">No. PO & Tanggal</th>
+                    <th className="p-3">No. PO</th>
+                    <th className="p-3">
+                      <span className="inline-flex items-center gap-1 text-slate-800">
+                        <Calendar className="w-3 h-3 text-emerald-600" />
+                        <span>Tanggal Dibuat</span>
+                      </span>
+                    </th>
                     <th className="p-3">Vendor / Pemasok</th>
                     <th className="p-3">Daftar Barang</th>
                     <th className="p-3 text-right">Total Tagihan</th>
@@ -2583,7 +2631,7 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                 <tbody className="divide-y divide-slate-100">
                   {filteredPurchaseOrders.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="text-center py-10 px-4">
+                      <td colSpan={8} className="text-center py-10 px-4">
                         <Filter className="w-8 h-8 text-slate-300 mx-auto mb-2" />
                         <p className="text-xs font-bold text-slate-700">Tidak ada Purchase Order yang cocok</p>
                         <p className="text-[11px] text-slate-500 max-w-md mx-auto mt-0.5">
@@ -2606,7 +2654,26 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                     <tr key={po.id} className="hover:bg-slate-50/70 transition">
                       <td className="p-3">
                         <span className="font-mono font-bold text-emerald-700 text-xs block">{po.poNumber}</span>
-                        <span className="text-[10px] text-slate-400">{formatDate(po.createdAt)}</span>
+                        <span className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-mono mt-0.5 inline-block">
+                          {po.items.length} Barang
+                        </span>
+                      </td>
+                      <td className="p-3 whitespace-nowrap">
+                        <div className="flex items-center gap-1.5 text-slate-900 font-bold text-xs">
+                          <Calendar className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                          <span>{formatDate(po.createdAt)}</span>
+                        </div>
+                        <div className="flex items-center gap-1 text-[10px] text-slate-400 mt-0.5">
+                          <Clock className="w-3 h-3 shrink-0" />
+                          <span>{formatTime(po.createdAt)}</span>
+                          <span className="text-slate-300">•</span>
+                          <span className="text-slate-500 font-medium">{formatRelativeTime(po.createdAt)}</span>
+                        </div>
+                        {po.createdBy && (
+                          <div className="text-[10px] text-slate-500 mt-0.5">
+                            Oleh: <span className="font-semibold text-slate-700">{po.createdBy}</span>
+                          </div>
+                        )}
                       </td>
                       <td className="p-3 font-medium">
                         <span className="font-bold text-slate-900 block">{po.supplierName}</span>
@@ -4713,14 +4780,39 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Estimasi Tanggal Kirim</label>
-                <input
-                  type="date"
-                  value={newPoForm.expectedDeliveryDate}
-                  onChange={(e) => setNewPoForm({ ...newPoForm, expectedDeliveryDate: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-emerald-500"
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center gap-1">
+                    <Calendar className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Tanggal Pembuatan PO *</span>
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={newPoForm.orderDate}
+                    onChange={(e) => setNewPoForm({ ...newPoForm, orderDate: e.target.value })}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-emerald-500 font-medium cursor-pointer"
+                  />
+                  <span className="text-[10px] text-slate-400 mt-0.5 block">
+                    Tanggal resmi PO diterbitkan
+                  </span>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center gap-1">
+                    <Clock className="w-3.5 h-3.5 text-slate-500" />
+                    <span>Estimasi Tanggal Kirim</span>
+                  </label>
+                  <input
+                    type="date"
+                    value={newPoForm.expectedDeliveryDate}
+                    onChange={(e) => setNewPoForm({ ...newPoForm, expectedDeliveryDate: e.target.value })}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-emerald-500 cursor-pointer"
+                  />
+                  <span className="text-[10px] text-slate-400 mt-0.5 block">
+                    Target kedatangan di gudang
+                  </span>
+                </div>
               </div>
 
               <div>
@@ -4773,7 +4865,10 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
               <div>
                 <h2 className="text-xl font-black text-slate-900 tracking-tight">PURCHASE ORDER</h2>
                 <p className="text-xs font-mono font-bold text-emerald-700">{previewPoModal.poNumber}</p>
-                <p className="text-[11px] text-slate-400 mt-0.5">Tanggal: {formatDate(previewPoModal.createdAt)}</p>
+                <p className="text-xs font-semibold text-slate-700 mt-1 flex items-center gap-1.5">
+                  <Calendar className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Tanggal Dibuat: <b className="text-slate-900">{formatDate(previewPoModal.createdAt)}</b> ({formatTime(previewPoModal.createdAt)})</span>
+                </p>
               </div>
               <div className="text-right">
                 <span className="font-bold text-sm text-slate-800 block">Divisi Purchasing</span>

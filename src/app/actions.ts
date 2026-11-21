@@ -471,6 +471,7 @@ export async function createPurchaseOrder(data: {
   supplierPhone?: string;
   supplierWhatsapp?: string;
   supplierAddress?: string;
+  orderDate?: string;
   expectedDeliveryDate?: string;
   notes?: string;
   createdBy: string;
@@ -563,6 +564,7 @@ export async function createPurchaseOrder(data: {
   const po = await prisma.purchaseOrder.create({
     data: {
       poNumber,
+      createdAt: data.orderDate ? new Date(data.orderDate) : undefined,
       supplierName: data.supplierName,
       supplierPhone: data.supplierPhone || null,
       supplierAddress: data.supplierAddress || null,
