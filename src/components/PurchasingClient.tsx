@@ -13,6 +13,7 @@ import {
   recordPoPayment,
   createOrUpdateVendorPrice,
   deleteVendorPrice,
+  syncVendorPriceChange,
 } from "@/app/actions";
 import {
   ShoppingCart,
@@ -117,6 +118,16 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
     grade: "",
     notes: "",
   });
+
+  // Modal Ubah & Sinkronisasi Harga Vendor
+  const [editSyncPriceItem, setEditSyncPriceItem] = useState<any | null>(null);
+  const [editPriceForm, setEditPriceForm] = useState({
+    newPrice: 0,
+    reason: "",
+  });
+  const [isSubmittingSyncPrice, setIsSubmittingSyncPrice] = useState<boolean>(false);
+  const [showPriceHistoryItem, setShowPriceHistoryItem] = useState<any | null>(null);
+  const [syncPriceInCreatePo, setSyncPriceInCreatePo] = useState<boolean>(true);
 
   // Modals
   const [showCreatePoModal, setShowCreatePoModal] = useState<boolean>(false);
@@ -624,6 +635,44 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
     }
   };
 
+  // Handler Buka & Simpan Modal Sinkronisasi Harga Vendor
+  const handleOpenSyncPriceModal = (item: any) => {
+    setEditSyncPriceItem(item);
+    setEditPriceForm({
+      newPrice: item.unitPrice,
+      reason: "Pembaruan pricelist resmi vendor",
+    });
+  };
+
+  const handleSaveSyncPrice = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editSyncPriceItem) return;
+    if (Number(editPriceForm.newPrice) <= 0) {
+      showMessage("error", "Nominal harga baru harus lebih besar dari 0.");
+      return;
+    }
+    setIsSubmittingSyncPrice(true);
+    try {
+      const res = await syncVendorPriceChange({
+        id: editSyncPriceItem.id,
+        newPrice: Number(editPriceForm.newPrice),
+        reason: editPriceForm.reason,
+        updatedBy: currentStaff?.name || "Staf Purchasing",
+      });
+      if (res.success) {
+        showMessage("success", res.message || "Harga vendor berhasil disinkronkan!");
+        setEditSyncPriceItem(null);
+        router.refresh();
+      } else {
+        showMessage("error", res.error || "Gagal menyinkronkan harga vendor.");
+      }
+    } catch (err: any) {
+      showMessage("error", err.message || "Terjadi kesalahan sistem.");
+    } finally {
+      setIsSubmittingSyncPrice(false);
+    }
+  };
+
   // Handler Auto-Detect saat Ketik Nama Perusahaan atau Retail
   const handleSupplierNameChangeInNewPo = (val: string) => {
     const trimmed = val.trim().toLowerCase();
@@ -879,6 +928,7 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
         taxLegalBasis: newPoForm.taxLegalBasis,
         paymentTerms: newPoForm.paymentTerms,
         paymentStatus: newPoForm.paymentStatus,
+        syncPricesToCatalog: syncPriceInCreatePo,
         paidAmount:
           newPoForm.paymentStatus === "PAID"
             ? cartTotal
@@ -2594,16 +2644,39 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                                       {formatRupiah(q.unitPrice)}{" "}
                                       <span className="text-[11px] font-normal text-slate-500">/ {q.unit}</span>
                                     </span>
-                                    {isCheapest ? (
-                                      <span className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 mt-0.5">
-                                        <Check className="w-2.5 h-2.5" />
-                                        <span>Paling Murah (Best Price)</span>
-                                      </span>
-                                    ) : (
-                                      <span className="text-[10px] text-rose-600 font-semibold block mt-0.5">
-                                        + {formatRupiah(diffFromCheapest)} lebih tinggi
-                                      </span>
+
+                                    {/* Indikator Fluktuasi Sinkronisasi Harga */}
+                                    {q.previousPrice && q.previousPrice !== q.unitPrice && (
+                                      <div className="mt-1">
+                                        {q.unitPrice > q.previousPrice ? (
+                                          <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-md bg-rose-100 text-rose-800 border border-rose-200">
+                                            <span>↗️ Naik dari {formatRupiah(q.previousPrice)}</span>
+                                            <span>(+{(((q.unitPrice - q.previousPrice) / q.previousPrice) * 100).toFixed(1)}%)</span>
+                                          </span>
+                                        ) : (
+                                          <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                            <span>↘️ Turun dari {formatRupiah(q.previousPrice)}</span>
+                                            <span>({(((q.unitPrice - q.previousPrice) / q.previousPrice) * 100).toFixed(1)}% Hemat)</span>
+                                          </span>
+                                        )}
+                                      </div>
                                     )}
+
+                                    <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                                      {isCheapest ? (
+                                        <span className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                          <Check className="w-2.5 h-2.5" />
+                                          <span>Paling Murah (Best Price)</span>
+                                        </span>
+                                      ) : (
+                                        <span className="text-[10px] text-rose-600 font-semibold block">
+                                          + {formatRupiah(diffFromCheapest)} lebih tinggi
+                                        </span>
+                                      )}
+                                    </div>
+                                    <span className="text-[9px] text-slate-400 block mt-0.5">
+                                      Sync: {formatDate(q.updatedAt)} {q.lastUpdatedBy ? `oleh ${q.lastUpdatedBy}` : ""}
+                                    </span>
                                   </div>
                                 </td>
 
@@ -2649,21 +2722,49 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                                         {q.notes}
                                       </span>
                                     )}
+                                    {q.priceChangeReason && (
+                                      <span className="text-[10px] text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded block mt-1 line-clamp-1">
+                                        Catatan Harga: {q.priceChangeReason}
+                                      </span>
+                                    )}
                                   </div>
                                 </td>
 
                                 {/* Aksi Cepat Purchasing */}
                                 <td className="p-3 text-center">
                                   <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                                    {/* Tombol Ubah / Sinkronkan Harga */}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenSyncPriceModal(q)}
+                                      className="bg-amber-50 hover:bg-amber-600 hover:text-white text-amber-800 border border-amber-300 px-2 py-1.5 rounded-lg text-xs font-bold cursor-pointer inline-flex items-center gap-1 transition shadow-2xs"
+                                      title="Ubah & Sinkronkan Harga jika Vendor Mengubah Harga"
+                                    >
+                                      <RefreshCw className="w-3.5 h-3.5 text-amber-600" />
+                                      <span>Sync Harga</span>
+                                    </button>
+
+                                    {/* Riwayat Fluktuasi jika ada */}
+                                    {q.priceHistoryJson && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setShowPriceHistoryItem(q)}
+                                        className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-2 py-1.5 rounded-lg text-xs font-semibold cursor-pointer inline-flex items-center gap-1 transition"
+                                        title="Lihat Riwayat Perubahan Harga Vendor"
+                                      >
+                                        <History className="w-3.5 h-3.5" />
+                                      </button>
+                                    )}
+
                                     {/* Tombol Nego WhatsApp */}
                                     <button
                                       type="button"
                                       onClick={() => handleSendVendorInquiryWA(q)}
-                                      className="bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-700 border border-emerald-200 px-2.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer inline-flex items-center gap-1 transition shadow-2xs"
-                                      title="Kirim Chat WhatsApp Nego / Tanya Ketersediaan ke Vendor"
+                                      className="bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-700 border border-emerald-200 px-2 py-1.5 rounded-lg text-xs font-bold cursor-pointer inline-flex items-center gap-1 transition shadow-2xs"
+                                      title="Kirim Chat WhatsApp Nego / Konfirmasi Harga ke Vendor"
                                     >
                                       <MessageCircle className="w-3.5 h-3.5" />
-                                      <span>Nego WA</span>
+                                      <span>WA</span>
                                     </button>
 
                                     {/* Tombol 1-Klik Buat PO Resmi */}
@@ -2674,7 +2775,7 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                                       title="Terbitkan Purchase Order (PO) langsung dengan vendor dan harga ini"
                                     >
                                       <ShoppingCart className="w-3.5 h-3.5" />
-                                      <span>Pilih &amp; Buat PO</span>
+                                      <span>Pilih &amp; PO</span>
                                     </button>
 
                                     {/* Hapus quote jika perlu */}
@@ -3145,6 +3246,21 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                     <Plus className="w-4 h-4" />
                     <span>+ Tambah Barang Lagi ke PO Ini</span>
                   </button>
+
+                  {/* Toggle Sinkronisasi Harga ke Katalog Rekanan */}
+                  <div className="pt-1">
+                    <label className="flex items-center gap-2 p-2.5 bg-emerald-50/80 border border-emerald-200 rounded-xl text-xs text-emerald-950 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={syncPriceInCreatePo}
+                        onChange={(e) => setSyncPriceInCreatePo(e.target.checked)}
+                        className="w-4 h-4 text-emerald-600 rounded cursor-pointer accent-emerald-600 shrink-0"
+                      />
+                      <span>
+                        <b>⚡ Sinkronkan Harga ke Katalog Vendor:</b> Jika harga satuan yang Anda ketik di PO ini berbeda dari katalog, sistem akan otomatis memperbarui data harga resmi vendor tersebut.
+                      </span>
+                    </label>
+                  </div>
                 </div>
               </div>
 
@@ -4479,6 +4595,243 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 8: UBAH & SINKRONKAN HARGA RESMI DARI VENDOR */}
+      {editSyncPriceItem && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto space-y-4">
+            <button
+              type="button"
+              onClick={() => setEditSyncPriceItem(null)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="border-b border-slate-100 pb-3 flex items-start gap-3">
+              <div className="p-3 bg-amber-100 text-amber-700 rounded-2xl">
+                <RefreshCw className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-900 text-base">Ubah &amp; Sinkronkan Harga Vendor</h3>
+                <p className="text-xs text-slate-500">
+                  Update harga penawaran saat vendor mengubah harga agar data di sistem purchasing selalu sinkron
+                </p>
+              </div>
+            </div>
+
+            {/* Info Bahan Baku & Vendor */}
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2 text-xs">
+              <div className="flex justify-between text-slate-600">
+                <span>Nama Bahan Baku:</span>
+                <span className="font-bold text-slate-900">{editSyncPriceItem.productName}</span>
+              </div>
+              <div className="flex justify-between text-slate-600">
+                <span>Vendor / Pemasok:</span>
+                <span className="font-bold text-slate-900">{editSyncPriceItem.vendorName}</span>
+              </div>
+              <div className="flex justify-between text-slate-600 border-t border-slate-200 pt-1.5">
+                <span>Harga Terdaftar Saat Ini:</span>
+                <span className="font-black text-slate-800 text-sm">
+                  {formatRupiah(editSyncPriceItem.unitPrice)} / {editSyncPriceItem.unit}
+                </span>
+              </div>
+              {editSyncPriceItem.previousPrice && (
+                <div className="flex justify-between text-slate-500 text-[11px]">
+                  <span>Harga Sebelum Terakhir:</span>
+                  <span>{formatRupiah(editSyncPriceItem.previousPrice)} / {editSyncPriceItem.unit}</span>
+                </div>
+              )}
+            </div>
+
+            <form onSubmit={handleSaveSyncPrice} className="space-y-4 text-xs">
+              {/* Input Harga Baru */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Harga Satuan Baru dari Vendor (Rp) *
+                </label>
+                <div className="relative">
+                  <Banknote className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
+                  <input
+                    type="number"
+                    min="1"
+                    required
+                    value={editPriceForm.newPrice}
+                    onChange={(e) => setEditPriceForm({ ...editPriceForm, newPrice: Number(e.target.value) })}
+                    className="w-full bg-white border border-slate-200 rounded-lg pl-9 pr-3 py-2 text-sm font-black text-slate-900 outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                {/* Kalkulasi Selisih Fluktuasi */}
+                {Number(editPriceForm.newPrice) > 0 && Number(editPriceForm.newPrice) !== editSyncPriceItem.unitPrice && (
+                  <div className="mt-2 p-2.5 rounded-lg border text-[11px] flex items-center justify-between font-bold animate-fadeIn">
+                    {Number(editPriceForm.newPrice) > editSyncPriceItem.unitPrice ? (
+                      <div className="flex items-center gap-1.5 text-rose-700 bg-rose-50 border-rose-200 p-1 rounded-md w-full">
+                        <TrendingUp className="w-4 h-4 text-rose-600" />
+                        <span>
+                          Kenaikan Harga: +{formatRupiah(Number(editPriceForm.newPrice) - editSyncPriceItem.unitPrice)} (+{(((Number(editPriceForm.newPrice) - editSyncPriceItem.unitPrice) / editSyncPriceItem.unitPrice) * 100).toFixed(2)}%)
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5 text-emerald-800 bg-emerald-50 border-emerald-200 p-1 rounded-md w-full">
+                        <Check className="w-4 h-4 text-emerald-600" />
+                        <span>
+                          Penurunan Harga (Lebih Hemat): -{formatRupiah(editSyncPriceItem.unitPrice - Number(editPriceForm.newPrice))} (-{(((editSyncPriceItem.unitPrice - Number(editPriceForm.newPrice)) / editSyncPriceItem.unitPrice) * 100).toFixed(2)}%)
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Alasan / Catatan Perubahan Harga */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Alasan / Keterangan Perubahan Harga dari Vendor *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Contoh: Kenaikan harga minyak dunia, fluktuasi kurs USD, diskon volume, dll."
+                  value={editPriceForm.reason}
+                  onChange={(e) => setEditPriceForm({ ...editPriceForm, reason: e.target.value })}
+                  className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs font-medium outline-none focus:border-emerald-500"
+                />
+
+                {/* Quick Chips Alasan */}
+                <div className="mt-1.5 flex flex-wrap gap-1 text-[10px] text-slate-500">
+                  <span className="text-[10px] text-slate-400">Pilih Cepat:</span>
+                  {[
+                    "Fluktuasi Kurs Mata Uang (USD)",
+                    "Kenaikan Harga Bahan Baku Global",
+                    "Penyesuaian Biaya Logistik & BBM",
+                    "Pricelist Resmi Kuartal Baru",
+                    "Diskon Khusus Volume Pembelian",
+                  ].map((r) => (
+                    <button
+                      key={r}
+                      type="button"
+                      onClick={() => setEditPriceForm({ ...editPriceForm, reason: r })}
+                      className="bg-slate-100 hover:bg-emerald-50 hover:text-emerald-800 px-2 py-0.5 rounded text-[10px] transition cursor-pointer border border-slate-200"
+                    >
+                      + {r}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-[11px] text-slate-600 space-y-1">
+                <p className="font-semibold text-slate-800">⚡ Dampak Sinkronisasi:</p>
+                <p>• Data di Katalog Harga Bahan Baku akan langsung terupdate ke harga baru.</p>
+                <p>• Rekalkulasi penanda <b>Best Price</b> akan otomatis diperbarui antar seluruh vendor.</p>
+                <p>• Penerbitan PO baru ke depan akan otomatis menggunakan harga terupdate ini.</p>
+              </div>
+
+              <div className="pt-2 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setEditSyncPriceItem(null)}
+                  className="px-3.5 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingSyncPrice}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-md transition cursor-pointer flex items-center gap-1.5"
+                >
+                  {isSubmittingSyncPrice ? <RefreshCw className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                  <span>Simpan &amp; Sinkronkan Harga</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 9: RIWAYAT FLUKTUASI & PERUBAHAN HARGA VENDOR */}
+      {showPriceHistoryItem && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto space-y-4">
+            <button
+              type="button"
+              onClick={() => setShowPriceHistoryItem(null)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="border-b border-slate-100 pb-3 flex items-start gap-3">
+              <div className="p-3 bg-purple-100 text-purple-700 rounded-2xl">
+                <History className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-900 text-base">Riwayat Fluktuasi Harga Vendor</h3>
+                <p className="text-xs text-slate-500">
+                  Tracking histori perubahan harga untuk <b>{showPriceHistoryItem.productName}</b> dari <b>{showPriceHistoryItem.vendorName}</b>
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              {(() => {
+                let list: any[] = [];
+                try {
+                  list = JSON.parse(showPriceHistoryItem.priceHistoryJson || "[]");
+                } catch {}
+
+                if (list.length === 0) {
+                  return (
+                    <div className="p-6 text-center text-slate-400 text-xs">
+                      Belum ada catatan riwayat perubahan harga untuk penawaran ini.
+                    </div>
+                  );
+                }
+
+                return list.map((h: any, idx: number) => (
+                  <div key={idx} className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5 text-xs">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-slate-800">
+                        {formatRupiah(h.oldPrice)} ➔ <span className="text-emerald-700">{formatRupiah(h.newPrice)}</span>
+                      </span>
+                      {h.percentDiff > 0 ? (
+                        <span className="text-[10px] font-bold text-rose-700 bg-rose-100 px-2 py-0.5 rounded-full">
+                          ↗️ +{h.percentDiff}%
+                        </span>
+                      ) : h.percentDiff < 0 ? (
+                        <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full">
+                          ↘️ {h.percentDiff}% (Hemat)
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-bold text-slate-600 bg-slate-200 px-2 py-0.5 rounded-full">
+                          Stabil
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-slate-600 text-[11px]">
+                      <b>Alasan:</b> {h.reason || "Perubahan harga vendor"}
+                    </p>
+                    <div className="flex items-center justify-between text-[10px] text-slate-400 border-t border-slate-200/60 pt-1">
+                      <span>Waktu: {formatDate(h.changedAt)}</span>
+                      <span>Oleh: {h.changedBy || "Staf Purchasing"}</span>
+                    </div>
+                  </div>
+                ));
+              })()}
+            </div>
+
+            <div className="pt-2 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowPriceHistoryItem(null)}
+                className="px-4 py-2 bg-slate-900 hover:bg-black text-white text-xs font-bold rounded-lg cursor-pointer"
+              >
+                Tutup
+              </button>
+            </div>
           </div>
         </div>
       )}

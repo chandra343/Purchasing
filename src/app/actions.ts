@@ -380,6 +380,7 @@ export async function createPurchaseOrder(data: {
   paidAmount?: number;
   paymentMethod?: string;
   paymentNotes?: string;
+  syncPricesToCatalog?: boolean;
   items: Array<{
     productId?: string;
     productName: string;
@@ -483,6 +484,47 @@ export async function createPurchaseOrder(data: {
       paymentDate: paymentStatus !== "UNPAID" ? new Date() : null,
     },
   });
+
+  // 1.5 Otomatis Sinkronkan Harga Baru ke Katalog Vendor jika dipilih oleh staf
+  if (data.syncPricesToCatalog) {
+    for (const it of itemsWithSubtotal) {
+      if (it.unitPrice > 0) {
+        try {
+          const matchedItem = await prisma.vendorPriceItem.findFirst({
+            where: {
+              productName: { equals: it.productName.trim() },
+              vendorName: { equals: data.supplierName.trim() },
+            },
+          });
+          if (matchedItem && matchedItem.unitPrice !== it.unitPrice) {
+            let hist: any[] = [];
+            try { hist = JSON.parse(matchedItem.priceHistoryJson || "[]"); } catch {}
+            hist.unshift({
+              oldPrice: matchedItem.unitPrice,
+              newPrice: it.unitPrice,
+              diff: it.unitPrice - matchedItem.unitPrice,
+              percentDiff: Number((((it.unitPrice - matchedItem.unitPrice) / matchedItem.unitPrice) * 100).toFixed(2)),
+              changedAt: new Date().toISOString(),
+              reason: `Sinkronisasi otomatis saat terbitkan PO ${poNumber}`,
+              changedBy: data.createdBy || "Tim Purchasing",
+            });
+            await prisma.vendorPriceItem.update({
+              where: { id: matchedItem.id },
+              data: {
+                previousPrice: matchedItem.unitPrice,
+                unitPrice: it.unitPrice,
+                lastUpdatedBy: data.createdBy || "Tim Purchasing",
+                priceChangeReason: `Sinkronisasi otomatis dari PO ${poNumber}`,
+                priceHistoryJson: JSON.stringify(hist.slice(0, 20)),
+              },
+            });
+          }
+        } catch (err) {
+          console.error("Gagal sinkronkan harga PO ke katalog vendor:", err);
+        }
+      }
+    }
+  }
 
   // 2. Kirim otomatis ke Project Gudang agar staf gudang tahu ada barang yang akan datang
   try {
@@ -669,6 +711,8 @@ export async function createOrUpdateVendorPrice(data: {
   paymentTerms?: string;
   grade?: string;
   notes?: string;
+  priceChangeReason?: string;
+  updatedBy?: string;
 }) {
   try {
     const cleanProductName = data.productName.trim();
@@ -679,6 +723,29 @@ export async function createOrUpdateVendorPrice(data: {
     }
 
     if (data.id) {
+      const existing = await prisma.vendorPriceItem.findUnique({ where: { id: data.id } });
+      const newPrice = Number(data.unitPrice);
+      let prevPrice = existing?.previousPrice || null;
+      let historyList: any[] = [];
+      try {
+        historyList = JSON.parse(existing?.priceHistoryJson || "[]");
+      } catch {}
+
+      if (existing && existing.unitPrice !== newPrice) {
+        prevPrice = existing.unitPrice;
+        const diff = newPrice - existing.unitPrice;
+        const percentDiff = Number((((newPrice - existing.unitPrice) / existing.unitPrice) * 100).toFixed(2));
+        historyList.unshift({
+          oldPrice: existing.unitPrice,
+          newPrice,
+          diff,
+          percentDiff,
+          changedAt: new Date().toISOString(),
+          reason: data.priceChangeReason || "Update penawaran harga vendor",
+          changedBy: data.updatedBy || "Staf Purchasing",
+        });
+      }
+
       await prisma.vendorPriceItem.update({
         where: { id: data.id },
         data: {
@@ -689,7 +756,11 @@ export async function createOrUpdateVendorPrice(data: {
           vendorWhatsapp: data.vendorWhatsapp || null,
           vendorAddress: data.vendorAddress || null,
           unit: data.unit || "kg",
-          unitPrice: Number(data.unitPrice),
+          unitPrice: newPrice,
+          previousPrice: prevPrice,
+          priceChangeReason: data.priceChangeReason || existing?.priceChangeReason || null,
+          lastUpdatedBy: data.updatedBy || existing?.lastUpdatedBy || "Staf Purchasing",
+          priceHistoryJson: JSON.stringify(historyList.slice(0, 20)),
           minOrderQty: Number(data.minOrderQty) || 1,
           leadTimeDays: Number(data.leadTimeDays) || 3,
           paymentTerms: data.paymentTerms || "TEMPO_30",
@@ -713,6 +784,7 @@ export async function createOrUpdateVendorPrice(data: {
           paymentTerms: data.paymentTerms || "TEMPO_30",
           grade: data.grade || null,
           notes: data.notes || null,
+          lastUpdatedBy: data.updatedBy || "Staf Purchasing",
         },
       });
     }
@@ -734,7 +806,76 @@ export async function createOrUpdateVendorPrice(data: {
     }
 
     revalidatePath("/");
-    return { success: true, message: `Penawaran harga untuk "${cleanProductName}" dari "${cleanVendorName}" berhasil disimpan!` };
+    return { success: true, message: `Penawaran harga untuk "${cleanProductName}" dari "${cleanVendorName}" berhasil disimpan & disinkronkan!` };
+  } catch (e: any) {
+    return { success: false, error: e.message };
+  }
+}
+
+// 7.1 Action Sinkronisasi Cepat Perubahan Harga Vendor (Instant Price Sync)
+export async function syncVendorPriceChange(data: {
+  id: string;
+  newPrice: number;
+  reason?: string;
+  updatedBy: string;
+}) {
+  try {
+    const existing = await prisma.vendorPriceItem.findUnique({ where: { id: data.id } });
+    if (!existing) throw new Error("Data penawaran vendor tidak ditemukan.");
+
+    const oldPrice = existing.unitPrice;
+    const newPrice = Number(data.newPrice);
+    if (!newPrice || newPrice <= 0) throw new Error("Nominal harga baru harus lebih besar dari 0.");
+
+    let history: any[] = [];
+    try {
+      history = JSON.parse(existing.priceHistoryJson || "[]");
+    } catch {}
+
+    const diff = newPrice - oldPrice;
+    const percentDiff = Number((((newPrice - oldPrice) / oldPrice) * 100).toFixed(2));
+    history.unshift({
+      oldPrice,
+      newPrice,
+      diff,
+      percentDiff,
+      changedAt: new Date().toISOString(),
+      reason: data.reason || "Sinkronisasi perubahan harga vendor",
+      changedBy: data.updatedBy || "Staf Purchasing",
+    });
+
+    await prisma.vendorPriceItem.update({
+      where: { id: data.id },
+      data: {
+        unitPrice: newPrice,
+        previousPrice: oldPrice,
+        priceChangeReason: data.reason || "Sinkronisasi perubahan harga vendor",
+        lastUpdatedBy: data.updatedBy || "Staf Purchasing",
+        priceHistoryJson: JSON.stringify(history.slice(0, 20)),
+      },
+    });
+
+    // Update isBestPrice status
+    const allForProduct = await prisma.vendorPriceItem.findMany({
+      where: { productName: existing.productName },
+      orderBy: { unitPrice: "asc" },
+    });
+    if (allForProduct.length > 0) {
+      const minPrice = allForProduct[0].unitPrice;
+      for (const item of allForProduct) {
+        await prisma.vendorPriceItem.update({
+          where: { id: item.id },
+          data: { isBestPrice: item.unitPrice === minPrice },
+        });
+      }
+    }
+
+    revalidatePath("/");
+    const statusNote = diff > 0 ? `naik +${percentDiff}%` : diff < 0 ? `turun ${percentDiff}% (hemat)` : `stabil`;
+    return {
+      success: true,
+      message: `✓ Harga "${existing.productName}" dari "${existing.vendorName}" berhasil disinkronkan (${statusNote}) menjadi Rp ${newPrice.toLocaleString("id-ID")}/${existing.unit}!`,
+    };
   } catch (e: any) {
     return { success: false, error: e.message };
   }

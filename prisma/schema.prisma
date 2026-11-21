@@ -132,6 +132,10 @@ model VendorPriceItem {
   grade          String?  // Spesifikasi Teknis / Grade (misal: Food Grade, Injection Moulding)
   notes          String?  // Catatan Tambahan Penawaran
   isBestPrice    Boolean  @default(false) // Penanda Harga Termurah
+  previousPrice  Float?   // Harga sebelum perubahan terakhir
+  priceChangeReason String? // Alasan vendor mengubah harga (misal: kurs USD, diskon volume, pricelist baru)
+  lastUpdatedBy  String?  // Nama staf / sumber yang menyinkronkan perubahan harga
+  priceHistoryJson String? // JSON riwayat fluktuasi harga: [{ oldPrice, newPrice, changedAt, reason, changedBy }]
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 }
