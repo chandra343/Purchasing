@@ -11,6 +11,8 @@ import {
   markNotificationAsRead,
   syncTaxFromPajakIndonesia,
   recordPoPayment,
+  createOrUpdateVendorPrice,
+  deleteVendorPrice,
 } from "@/app/actions";
 import {
   ShoppingCart,
@@ -56,6 +58,10 @@ import {
   Receipt,
   Wallet,
   Check,
+  Tag,
+  Award,
+  Zap,
+  Layers,
 } from "lucide-react";
 import LocationMapEmbed from "./LocationMapEmbed";
 
@@ -88,7 +94,29 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
   }
 
   // Active Navigation Tab
-  const [activeTab, setActiveTab] = useState<"dashboard" | "orders" | "requisitions" | "vendors" | "gudangCatalog">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "orders" | "requisitions" | "priceComparison" | "vendors" | "gudangCatalog">("dashboard");
+
+  // State Komparasi Harga Bahan Baku & Penawaran Vendor
+  const [priceSearchQuery, setPriceSearchQuery] = useState<string>("");
+  const [priceCategoryFilter, setPriceCategoryFilter] = useState<string>("ALL");
+  const [priceSortBy, setPriceSortBy] = useState<"PRICE_ASC" | "PRICE_DESC" | "LEAD_TIME">("PRICE_ASC");
+  const [showAddPriceModal, setShowAddPriceModal] = useState<boolean>(false);
+  const [isSubmittingPrice, setIsSubmittingPrice] = useState<boolean>(false);
+  const [newPriceForm, setNewPriceForm] = useState({
+    productName: "",
+    category: "Bahan Baku Plastik",
+    vendorName: "",
+    vendorPhone: "",
+    vendorWhatsapp: "",
+    vendorAddress: "",
+    unit: "kg",
+    unitPrice: 0,
+    minOrderQty: 1,
+    leadTimeDays: 2,
+    paymentTerms: "TEMPO_30",
+    grade: "",
+    notes: "",
+  });
 
   // Modals
   const [showCreatePoModal, setShowCreatePoModal] = useState<boolean>(false);
@@ -412,6 +440,188 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
       ? `https://wa.me/${formattedPhone}?text=${encodeURIComponent(msg)}`
       : `https://wa.me/?text=${encodeURIComponent(msg)}`;
     window.open(waUrl, "_blank");
+  };
+
+  // Memo Komparasi Harga Bahan Baku & Penawaran Vendor
+  const filteredVendorPrices = useMemo(() => {
+    let list: any[] = [...(initialData.vendorPrices || [])];
+    if (priceSearchQuery.trim()) {
+      const q = priceSearchQuery.toLowerCase().trim();
+      list = list.filter(
+        (it) =>
+          it.productName?.toLowerCase().includes(q) ||
+          it.vendorName?.toLowerCase().includes(q) ||
+          it.category?.toLowerCase().includes(q) ||
+          it.grade?.toLowerCase().includes(q)
+      );
+    }
+    if (priceCategoryFilter !== "ALL") {
+      list = list.filter((it) => it.category === priceCategoryFilter);
+    }
+    if (priceSortBy === "PRICE_ASC") {
+      list.sort((a, b) => (a.unitPrice || 0) - (b.unitPrice || 0));
+    } else if (priceSortBy === "PRICE_DESC") {
+      list.sort((a, b) => (b.unitPrice || 0) - (a.unitPrice || 0));
+    } else if (priceSortBy === "LEAD_TIME") {
+      list.sort((a, b) => (a.leadTimeDays || 0) - (b.leadTimeDays || 0));
+    }
+    return list;
+  }, [initialData.vendorPrices, priceSearchQuery, priceCategoryFilter, priceSortBy]);
+
+  const uniquePriceCategories = useMemo(() => {
+    const set = new Set<string>();
+    (initialData.vendorPrices || []).forEach((p: any) => {
+      if (p.category) set.add(p.category);
+    });
+    return Array.from(set);
+  }, [initialData.vendorPrices]);
+
+  const groupedProductsForCompare = useMemo(() => {
+    const map = new Map<string, any[]>();
+    for (const item of filteredVendorPrices) {
+      const key = item.productName.trim();
+      if (!map.has(key)) {
+        map.set(key, []);
+      }
+      map.get(key)!.push(item);
+    }
+    return Array.from(map.entries()).map(([productName, quotes]) => {
+      const sortedQuotes = [...quotes].sort((a, b) => (a.unitPrice || 0) - (b.unitPrice || 0));
+      const minPrice = sortedQuotes[0]?.unitPrice || 0;
+      const maxPrice = sortedQuotes[sortedQuotes.length - 1]?.unitPrice || 0;
+      const bestVendor = sortedQuotes[0]?.vendorName || "";
+      const unit = sortedQuotes[0]?.unit || "unit";
+      const category = sortedQuotes[0]?.category || "Bahan Baku";
+      return {
+        productName,
+        category,
+        unit,
+        minPrice,
+        maxPrice,
+        bestVendor,
+        quotes: sortedQuotes,
+      };
+    });
+  }, [filteredVendorPrices]);
+
+  // Handler 1-Klik Pilih Vendor & Bahan Baku untuk Buat PO
+  const handleSelectVendorPriceForPO = (item: any) => {
+    setNewPoForm({
+      supplierName: item.vendorName,
+      supplierPhone: item.vendorPhone || "",
+      supplierWhatsapp: item.vendorWhatsapp || item.vendorPhone || "",
+      supplierAddress: item.vendorAddress || "",
+      expectedDeliveryDate: new Date(Date.now() + 86400000 * (item.leadTimeDays || 3)).toISOString().split("T")[0],
+      notes: `Pengadaan Bahan Baku: ${item.productName} (Grade: ${item.grade || "Standar"}). Syarat MOQ: ${item.minOrderQty || 1} ${item.unit}. Lead Time: ${item.leadTimeDays || 3} hari.`,
+      paymentTerms: item.paymentTerms || "TEMPO_30",
+      paymentStatus: "UNPAID",
+      paidAmount: 0,
+      taxRate: initialData.taxSetting?.rate || 12,
+      taxCategory: "STANDAR_12",
+      taxLegalBasis: initialData.taxSetting?.legalBasis || "UU No. 7 Tahun 2021 (UU HPP) Pasal 7 (1b)",
+      items: [
+        {
+          id: `item-${Date.now()}`,
+          productId: "",
+          productName: item.productName,
+          quantity: item.minOrderQty || 1,
+          unit: item.unit || "kg",
+          unitPrice: Number(item.unitPrice) || 0,
+        },
+      ],
+    });
+    setSupplierMatch({
+      name: item.vendorName,
+      phone: item.vendorPhone,
+      whatsapp: item.vendorWhatsapp,
+      address: item.vendorAddress,
+    });
+    setShowCreatePoModal(true);
+    showMessage("success", `✓ Vendor "${item.vendorName}" & Bahan Baku "${item.productName}" (${formatRupiah(item.unitPrice)}/${item.unit}) dimuat otomatis!`);
+  };
+
+  // Handler Chat Nego via WhatsApp
+  const handleSendVendorInquiryWA = (item: any) => {
+    const rawPhone = item.vendorWhatsapp || item.vendorPhone || "";
+    const cleanDigits = rawPhone.replace(/[^0-9]/g, "");
+    const formattedPhone = cleanDigits.startsWith("0") ? "62" + cleanDigits.slice(1) : cleanDigits;
+
+    const msg =
+      `Halo Tim Sales/Marketing *${item.vendorName}*,\n\n` +
+      `Kami dari Divisi Purchasing PT Sumber Makmur Sentosa.\n` +
+      `Kami berminat untuk melakukan pengadaan bahan baku:\n` +
+      `• *${item.productName}*\n` +
+      `• Spesifikasi/Grade: ${item.grade || "Standar Pabrik"}\n` +
+      `• Penawaran Terdaftar: *${formatRupiah(item.unitPrice)} / ${item.unit}*\n` +
+      `• Rencana Pembelian (MOQ): ${item.minOrderQty || 1} ${item.unit}\n` +
+      `• Termin Pembayaran yang diajukan: ${item.paymentTerms || "Tempo 30 Hari"}\n\n` +
+      `Mohon info apakah stok fisik ready dan harga tersebut masih berlaku untuk penerbitan PO minggu ini? Terima kasih.\n\n` +
+      `Hormat kami,\n` +
+      `*${currentStaff?.name || "Tim Purchasing"}*`;
+
+    const waUrl = formattedPhone
+      ? `https://wa.me/${formattedPhone}?text=${encodeURIComponent(msg)}`
+      : `https://wa.me/?text=${encodeURIComponent(msg)}`;
+    window.open(waUrl, "_blank");
+  };
+
+  // Handler Simpan Penawaran Harga Baru
+  const handleSaveVendorPrice = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newPriceForm.productName.trim() || !newPriceForm.vendorName.trim() || Number(newPriceForm.unitPrice) <= 0) {
+      showMessage("error", "Nama bahan baku, nama vendor, dan harga satuan valid wajib diisi.");
+      return;
+    }
+    setIsSubmittingPrice(true);
+    try {
+      const res = await createOrUpdateVendorPrice({
+        ...newPriceForm,
+        unitPrice: Number(newPriceForm.unitPrice),
+        minOrderQty: Number(newPriceForm.minOrderQty),
+        leadTimeDays: Number(newPriceForm.leadTimeDays),
+      });
+      if (res.success) {
+        showMessage("success", res.message || "Penawaran harga bahan baku berhasil disimpan!");
+        setShowAddPriceModal(false);
+        setNewPriceForm({
+          productName: "",
+          category: "Bahan Baku Plastik",
+          vendorName: "",
+          vendorPhone: "",
+          vendorWhatsapp: "",
+          vendorAddress: "",
+          unit: "kg",
+          unitPrice: 0,
+          minOrderQty: 1,
+          leadTimeDays: 2,
+          paymentTerms: "TEMPO_30",
+          grade: "",
+          notes: "",
+        });
+        router.refresh();
+      } else {
+        showMessage("error", res.error || "Gagal menyimpan penawaran harga.");
+      }
+    } catch (err: any) {
+      showMessage("error", err.message || "Terjadi kesalahan.");
+    } finally {
+      setIsSubmittingPrice(false);
+    }
+  };
+
+  const handleDeletePriceQuote = async (id: string, name: string) => {
+    if (!confirm(`Hapus penawaran harga "${name}"?`)) return;
+    try {
+      const res = await deleteVendorPrice(id);
+      if (res.success) {
+        showMessage("success", res.message || "Penawaran harga berhasil dihapus.");
+        router.refresh();
+      } else {
+        showMessage("error", res.error || "Gagal menghapus penawaran.");
+      }
+    } catch (err: any) {
+      showMessage("error", err.message || "Terjadi kesalahan.");
+    }
   };
 
   // Handler Auto-Detect saat Ketik Nama Perusahaan atau Retail
@@ -1252,6 +1462,20 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                 {initialData.stats.pendingPRsGudangCount} Permintaan
               </span>
             )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab("priceComparison")}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
+              activeTab === "priceComparison" ? "bg-emerald-50 text-emerald-800 font-bold" : "text-slate-600 hover:text-slate-900"
+            }`}
+          >
+            <Tag className="w-4 h-4 text-emerald-600" />
+            <span>Katalog Harga Bahan Baku</span>
+            <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-bold">
+              {initialData.vendorPrices?.length || 0}
+            </span>
           </button>
 
           <button
@@ -2129,6 +2353,349 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                 <div className="p-8 text-center text-slate-400 text-xs">
                   Belum ada Permintaan Pengadaan (PR) dari staf gudang saat ini.
                 </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* TAB 3.5: KATALOG HARGA BAHAN BAKU & KOMPARASI VENDOR */}
+        {activeTab === "priceComparison" && (
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-5 space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Tag className="w-5 h-5 text-emerald-600" />
+                  <h3 className="font-bold text-base text-slate-900">
+                    Katalog Bahan Baku &amp; Komparasi Harga Vendor
+                  </h3>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Cari bahan baku industri, bandingkan penawaran harga resmi antar-supplier, dan terbitkan Purchase Order langsung ke vendor terbaik
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowAddPriceModal(true)}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm self-start sm:self-auto"
+              >
+                <Plus className="w-4 h-4" />
+                <span>+ Daftarkan Penawaran Harga Baru</span>
+              </button>
+            </div>
+
+            {/* Toolbar Filter & Pencarian Bahan Baku */}
+            <div className="bg-slate-50/80 p-3.5 rounded-xl border border-slate-200/80 space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-2.5">
+                {/* Search Bar */}
+                <div className="md:col-span-6 relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={priceSearchQuery}
+                    onChange={(e) => setPriceSearchQuery(e.target.value)}
+                    placeholder="Cari nama bahan baku (contoh: Biji Plastik, Pelat Baja, Kabel Tembaga, IPA, Karton)..."
+                    className="w-full pl-9 pr-8 py-2 text-xs bg-white border border-slate-200 rounded-lg text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium"
+                  />
+                  {priceSearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setPriceSearchQuery("")}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                {/* Filter Kategori */}
+                <div className="md:col-span-3 relative">
+                  <Layers className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <select
+                    value={priceCategoryFilter}
+                    onChange={(e) => setPriceCategoryFilter(e.target.value)}
+                    className="w-full pl-8 pr-3 py-2 text-xs bg-white border border-slate-200 rounded-lg text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer font-medium"
+                  >
+                    <option value="ALL">📦 Semua Kategori Bahan Baku</option>
+                    {uniquePriceCategories.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Sort Filter */}
+                <div className="md:col-span-3 relative">
+                  <ArrowUpDown className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <select
+                    value={priceSortBy}
+                    onChange={(e) => setPriceSortBy(e.target.value as any)}
+                    className="w-full pl-8 pr-3 py-2 text-xs bg-white border border-slate-200 rounded-lg text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer font-medium"
+                  >
+                    <option value="PRICE_ASC">Harga: Termurah ke Tertinggi</option>
+                    <option value="PRICE_DESC">Harga: Tertinggi ke Termurah</option>
+                    <option value="LEAD_TIME">Pengiriman: Tercepat (Lead Time)</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Quick Suggestion Chips */}
+              <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                <span className="text-[11px] text-slate-400 font-semibold mr-1">Pencarian Cepat:</span>
+                {["Biji Plastik HDPE", "Kabel Tembaga", "Pelat Baja", "Isopropyl Alcohol", "Karton Box"].map((chip) => (
+                  <button
+                    key={chip}
+                    type="button"
+                    onClick={() => setPriceSearchQuery(chip)}
+                    className={`text-[10px] px-2.5 py-1 rounded-md transition cursor-pointer font-medium ${
+                      priceSearchQuery === chip
+                        ? "bg-emerald-600 text-white font-bold"
+                        : "bg-white text-slate-700 border border-slate-200 hover:border-emerald-300 hover:bg-emerald-50"
+                    }`}
+                  >
+                    🔍 {chip}
+                  </button>
+                ))}
+                {(priceSearchQuery || priceCategoryFilter !== "ALL") && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPriceSearchQuery("");
+                      setPriceCategoryFilter("ALL");
+                    }}
+                    className="text-[10px] text-rose-600 hover:underline font-bold ml-1 cursor-pointer"
+                  >
+                    Reset Filter
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Daftar Komparasi Bahan Baku Antar Vendor */}
+            <div className="space-y-6">
+              {groupedProductsForCompare.length === 0 ? (
+                <div className="text-center py-12 px-4 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                  <Tag className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+                  <h4 className="font-bold text-sm text-slate-700">Tidak Ada Bahan Baku yang Cocok</h4>
+                  <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
+                    Tidak ditemukan data penawaran harga vendor yang sesuai dengan pencarian "{priceSearchQuery}". Silakan daftarkan penawaran harga baru atau gunakan kata kunci lain.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShowAddPriceModal(true)}
+                    className="mt-3 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition cursor-pointer inline-flex items-center gap-1.5"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Daftarkan Penawaran Harga Baru</span>
+                  </button>
+                </div>
+              ) : (
+                groupedProductsForCompare.map((group, gIdx) => (
+                  <div
+                    key={group.productName || gIdx}
+                    className="bg-white border-2 border-slate-200 rounded-2xl overflow-hidden shadow-xs hover:border-slate-300 transition"
+                  >
+                    {/* Header Grup Bahan Baku */}
+                    <div className="bg-slate-50/90 border-b border-slate-200 p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
+                          <h4 className="font-black text-sm sm:text-base text-slate-900">
+                            {group.productName}
+                          </h4>
+                          <span className="text-[10px] bg-slate-200 text-slate-700 font-bold px-2 py-0.5 rounded-md">
+                            {group.category}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-1">
+                          Tersedia penawaran dari <b>{group.quotes.length} vendor rekanan</b> resmi terdaftar
+                        </p>
+                      </div>
+
+                      {/* Best Price Callout */}
+                      <div className="bg-emerald-50 border border-emerald-300 rounded-xl px-3.5 py-2 flex items-center gap-3">
+                        <Award className="w-5 h-5 text-emerald-600 shrink-0" />
+                        <div>
+                          <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wide block">
+                            🏷️ Harga Termurah (Best Price):
+                          </span>
+                          <span className="font-black text-emerald-700 text-sm sm:text-base">
+                            {formatRupiah(group.minPrice)}{" "}
+                            <span className="text-xs font-normal text-emerald-600">/ {group.unit}</span>
+                          </span>
+                          <span className="text-[10px] text-emerald-800 block font-medium truncate max-w-[200px]">
+                            oleh {group.bestVendor}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Matriks Perbandingan Vendor */}
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-100/70 text-slate-600 font-bold uppercase text-[10px]">
+                          <tr>
+                            <th className="p-3">Vendor / Pemasok</th>
+                            <th className="p-3">Harga Satuan Resmi</th>
+                            <th className="p-3 text-center">Ketentuan Pengadaan (MOQ &amp; Termin)</th>
+                            <th className="p-3 text-center">Estimasi Pengiriman</th>
+                            <th className="p-3">Spesifikasi / Grade</th>
+                            <th className="p-3 text-center">Aksi Cepat Purchasing</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {group.quotes.map((q: any) => {
+                            const isCheapest = q.unitPrice === group.minPrice;
+                            const diffFromCheapest = q.unitPrice - group.minPrice;
+                            return (
+                              <tr
+                                key={q.id}
+                                className={`transition ${
+                                  isCheapest ? "bg-emerald-50/30 hover:bg-emerald-50/50" : "hover:bg-slate-50/60"
+                                }`}
+                              >
+                                {/* Vendor Info */}
+                                <td className="p-3">
+                                  <div className="flex items-start gap-2">
+                                    {isCheapest && (
+                                      <span
+                                        className="mt-0.5 text-emerald-600 shrink-0"
+                                        title="Penyedia Harga Termurah"
+                                      >
+                                        <Award className="w-4 h-4" />
+                                      </span>
+                                    )}
+                                    <div>
+                                      <span className="font-bold text-slate-900 block text-xs">
+                                        {q.vendorName}
+                                      </span>
+                                      {q.vendorAddress && (
+                                        <span className="text-[10px] text-slate-400 block line-clamp-1 max-w-[220px]">
+                                          📍 {q.vendorAddress}
+                                        </span>
+                                      )}
+                                      <div className="flex items-center gap-2 mt-0.5 text-[10px] text-slate-500">
+                                        {q.vendorWhatsapp && (
+                                          <span className="text-emerald-700 font-mono">
+                                            WA: {q.vendorWhatsapp}
+                                          </span>
+                                        )}
+                                        {q.vendorPhone && <span>• Telp: {q.vendorPhone}</span>}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </td>
+
+                                {/* Harga Satuan */}
+                                <td className="p-3">
+                                  <div>
+                                    <span className="font-black text-slate-900 text-sm block">
+                                      {formatRupiah(q.unitPrice)}{" "}
+                                      <span className="text-[11px] font-normal text-slate-500">/ {q.unit}</span>
+                                    </span>
+                                    {isCheapest ? (
+                                      <span className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 mt-0.5">
+                                        <Check className="w-2.5 h-2.5" />
+                                        <span>Paling Murah (Best Price)</span>
+                                      </span>
+                                    ) : (
+                                      <span className="text-[10px] text-rose-600 font-semibold block mt-0.5">
+                                        + {formatRupiah(diffFromCheapest)} lebih tinggi
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+
+                                {/* MOQ & Termin */}
+                                <td className="p-3 text-center">
+                                  <div className="space-y-0.5">
+                                    <div className="text-[11px] text-slate-800 font-semibold">
+                                      MOQ: {q.minOrderQty || 1} {q.unit}
+                                    </div>
+                                    <span className="inline-block text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">
+                                      {q.paymentTerms === "TEMPO_30"
+                                        ? "Tempo 30 Hari"
+                                        : q.paymentTerms === "TEMPO_60"
+                                        ? "Tempo 60 Hari"
+                                        : q.paymentTerms === "TEMPO_14"
+                                        ? "Tempo 14 Hari"
+                                        : q.paymentTerms === "COD"
+                                        ? "COD"
+                                        : q.paymentTerms === "CASH"
+                                        ? "Tunai Dimuka"
+                                        : q.paymentTerms || "Net 30"}
+                                    </span>
+                                  </div>
+                                </td>
+
+                                {/* Waktu Kirim (Lead Time) */}
+                                <td className="p-3 text-center">
+                                  <div className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-50 text-blue-800 border border-blue-200 text-xs font-bold">
+                                    <Zap className="w-3.5 h-3.5 text-blue-600" />
+                                    <span>{q.leadTimeDays || 3} Hari</span>
+                                  </div>
+                                  <span className="text-[9px] text-slate-400 block mt-0.5">Tiba di Gudang</span>
+                                </td>
+
+                                {/* Grade / Spesifikasi */}
+                                <td className="p-3">
+                                  <div className="text-xs">
+                                    <span className="font-semibold text-slate-800 block text-[11px]">
+                                      {q.grade || "Standar Pabrik"}
+                                    </span>
+                                    {q.notes && (
+                                      <span className="text-[10px] text-slate-500 block italic line-clamp-2 max-w-[200px]">
+                                        {q.notes}
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+
+                                {/* Aksi Cepat Purchasing */}
+                                <td className="p-3 text-center">
+                                  <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                                    {/* Tombol Nego WhatsApp */}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSendVendorInquiryWA(q)}
+                                      className="bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-700 border border-emerald-200 px-2.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer inline-flex items-center gap-1 transition shadow-2xs"
+                                      title="Kirim Chat WhatsApp Nego / Tanya Ketersediaan ke Vendor"
+                                    >
+                                      <MessageCircle className="w-3.5 h-3.5" />
+                                      <span>Nego WA</span>
+                                    </button>
+
+                                    {/* Tombol 1-Klik Buat PO Resmi */}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSelectVendorPriceForPO(q)}
+                                      className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer inline-flex items-center gap-1.5 transition shadow-xs"
+                                      title="Terbitkan Purchase Order (PO) langsung dengan vendor dan harga ini"
+                                    >
+                                      <ShoppingCart className="w-3.5 h-3.5" />
+                                      <span>Pilih &amp; Buat PO</span>
+                                    </button>
+
+                                    {/* Hapus quote jika perlu */}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeletePriceQuote(q.id, `${q.vendorName} - ${q.productName}`)}
+                                      className="text-slate-400 hover:text-rose-600 p-1 rounded-md transition cursor-pointer"
+                                      title="Hapus penawaran harga ini"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ))
               )}
             </div>
           </div>
@@ -3667,6 +4234,248 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                   className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-md transition cursor-pointer"
                 >
                   Simpan Vendor
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 7: DAFTARKAN PENAWARAN HARGA BAHAN BAKU VENDOR BARU */}
+      {showAddPriceModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto space-y-4">
+            <button
+              type="button"
+              onClick={() => setShowAddPriceModal(false)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="border-b border-slate-100 pb-3 flex items-start gap-3">
+              <div className="p-3 bg-emerald-100 text-emerald-700 rounded-2xl">
+                <Tag className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-900 text-base">Daftarkan Penawaran Harga Bahan Baku</h3>
+                <p className="text-xs text-slate-500">
+                  Catat harga penawaran resmi dari vendor rekanan untuk komparasi dan acuan penerbitan PO
+                </p>
+              </div>
+            </div>
+
+            <form onSubmit={handleSaveVendorPrice} className="space-y-3.5 text-xs">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Nama Bahan Baku / Material *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Contoh: Biji Plastik HDPE Virgin, Kabel Tembaga NYY 4x16mm, Pelat Baja..."
+                  value={newPriceForm.productName}
+                  onChange={(e) => setNewPriceForm({ ...newPriceForm, productName: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-semibold outline-none focus:border-emerald-500 focus:bg-white"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Kategori Bahan Baku *</label>
+                  <select
+                    value={newPriceForm.category}
+                    onChange={(e) => setNewPriceForm({ ...newPriceForm, category: e.target.value })}
+                    className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs font-medium outline-none focus:border-emerald-500 cursor-pointer"
+                  >
+                    <option value="Bahan Baku Plastik">Bahan Baku Plastik</option>
+                    <option value="Logam & Manufaktur">Logam &amp; Manufaktur</option>
+                    <option value="Komponen & Listrik">Komponen &amp; Listrik</option>
+                    <option value="Bahan Kimia & Pelarut">Bahan Kimia &amp; Pelarut</option>
+                    <option value="Kemasan & Packaging">Kemasan &amp; Packaging</option>
+                    <option value="Bahan Baku Pangan">Bahan Baku Pangan</option>
+                    <option value="Lainnya">Lainnya</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Nama Vendor Penyedia *</label>
+                  <input
+                    type="text"
+                    required
+                    list="vendors-quote-datalist"
+                    placeholder="Contoh: PT Chandra Asri, Toko Glodok..."
+                    value={newPriceForm.vendorName}
+                    onChange={(e) => {
+                      const vName = e.target.value;
+                      const matched = allKnownSuppliers.find((s: any) => s.name.toLowerCase() === vName.toLowerCase());
+                      if (matched) {
+                        setNewPriceForm({
+                          ...newPriceForm,
+                          vendorName: vName,
+                          vendorPhone: matched.phone || newPriceForm.vendorPhone,
+                          vendorWhatsapp: matched.whatsapp || matched.phone || newPriceForm.vendorWhatsapp,
+                          vendorAddress: matched.address || newPriceForm.vendorAddress,
+                        });
+                      } else {
+                        setNewPriceForm({ ...newPriceForm, vendorName: vName });
+                      }
+                    }}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-semibold outline-none focus:border-emerald-500 focus:bg-white"
+                  />
+                  <datalist id="vendors-quote-datalist">
+                    {allKnownSuppliers.map((s: any) => (
+                      <option key={s.id || s.name} value={s.name}>
+                        {s.phone ? `HP: ${s.phone}` : ""}
+                      </option>
+                    ))}
+                  </datalist>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Nomor WhatsApp Sales / Toko</label>
+                  <input
+                    type="tel"
+                    placeholder="08123456789 (Untuk direct chat WA)"
+                    value={newPriceForm.vendorWhatsapp}
+                    onChange={(e) => setNewPriceForm({ ...newPriceForm, vendorWhatsapp: e.target.value })}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Nomor Telepon Kantor</label>
+                  <input
+                    type="tel"
+                    placeholder="021-5551234"
+                    value={newPriceForm.vendorPhone}
+                    onChange={(e) => setNewPriceForm({ ...newPriceForm, vendorPhone: e.target.value })}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+                <div className="sm:col-span-4">
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Satuan Barang *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="ton, kg, meter, drum, pcs..."
+                    value={newPriceForm.unit}
+                    onChange={(e) => setNewPriceForm({ ...newPriceForm, unit: e.target.value })}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-semibold outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                <div className="sm:col-span-8">
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Harga Satuan Penawaran (Rp) *</label>
+                  <input
+                    type="number"
+                    min="1"
+                    required
+                    placeholder="Contoh: 26500000"
+                    value={newPriceForm.unitPrice || ""}
+                    onChange={(e) => setNewPriceForm({ ...newPriceForm, unitPrice: Number(e.target.value) })}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-bold text-slate-900 outline-none focus:border-emerald-500"
+                  />
+                  {newPriceForm.unitPrice > 0 && (
+                    <span className="text-[10px] text-emerald-700 font-bold mt-0.5 block">
+                      = {formatRupiah(newPriceForm.unitPrice)} / {newPriceForm.unit || "unit"}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Minimal Order (MOQ)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={newPriceForm.minOrderQty}
+                    onChange={(e) => setNewPriceForm({ ...newPriceForm, minOrderQty: Number(e.target.value) })}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-semibold outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Waktu Kirim (Lead Time)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    placeholder="Hari"
+                    value={newPriceForm.leadTimeDays}
+                    onChange={(e) => setNewPriceForm({ ...newPriceForm, leadTimeDays: Number(e.target.value) })}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-semibold outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Termin Pembayaran</label>
+                  <select
+                    value={newPriceForm.paymentTerms}
+                    onChange={(e) => setNewPriceForm({ ...newPriceForm, paymentTerms: e.target.value })}
+                    className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-emerald-500 cursor-pointer"
+                  >
+                    <option value="TEMPO_30">Tempo 30 Hari</option>
+                    <option value="TEMPO_60">Tempo 60 Hari</option>
+                    <option value="TEMPO_14">Tempo 14 Hari</option>
+                    <option value="COD">COD</option>
+                    <option value="CASH">Tunai Dimuka</option>
+                    <option value="DP_50">DP 50%</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Spesifikasi / Grade Bahan Baku</label>
+                <input
+                  type="text"
+                  placeholder="Contoh: Virgin Injection Moulding, JIS G3101 SS400, Food Grade FDA..."
+                  value={newPriceForm.grade}
+                  onChange={(e) => setNewPriceForm({ ...newPriceForm, grade: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Alamat Pabrik / Gudang Vendor</label>
+                <input
+                  type="text"
+                  placeholder="Alamat pabrik atau lokasi pengambilan barang"
+                  value={newPriceForm.vendorAddress}
+                  onChange={(e) => setNewPriceForm({ ...newPriceForm, vendorAddress: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Catatan Tambahan Penawaran</label>
+                <textarea
+                  rows={2}
+                  placeholder="Keterangan kemasan (pallet/zak), nomor sertifikat COA, batas validitas harga, dll."
+                  value={newPriceForm.notes}
+                  onChange={(e) => setNewPriceForm({ ...newPriceForm, notes: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="pt-2 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAddPriceModal(false)}
+                  className="px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingPrice}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-md transition cursor-pointer flex items-center gap-1.5"
+                >
+                  {isSubmittingPrice ? <RefreshCw className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                  <span>Simpan Penawaran Harga</span>
                 </button>
               </div>
             </form>

@@ -73,6 +73,7 @@ export async function getPurchasingDashboardData() {
     gudangLowStock,
     gudangPRs,
     gudangOrders,
+    vendorPrices,
   ] = await Promise.all([
     prisma.purchasingStaff.findMany({ orderBy: { idCard: "asc" } }),
     prisma.vendor.findMany({ orderBy: { name: "asc" } }),
@@ -84,7 +85,167 @@ export async function getPurchasingDashboardData() {
     getGudangLowStock(),
     getGudangRequisitions(),
     getGudangOrders(),
+    prisma.vendorPriceItem.findMany({ orderBy: [{ productName: "asc" }, { unitPrice: "asc" }] }),
   ]);
+
+  // Seed default Katalog Harga Bahan Baku Vendor jika belum ada data
+  let activeVendorPrices = vendorPrices;
+  if (activeVendorPrices.length === 0) {
+    const defaultQuotes = [
+      {
+        productName: "Biji Plastik HDPE Virgin Granule",
+        category: "Bahan Baku Plastik",
+        vendorName: "PT Chandra Asri Petrochemical Tbk",
+        vendorPhone: "021-5307950",
+        vendorWhatsapp: "081199223344",
+        vendorAddress: "Wisma Barito Pacific Tower B, Jl. Letjen S. Parman Kav 62-63, Jakarta Barat",
+        unit: "ton",
+        unitPrice: 26500000,
+        minOrderQty: 2,
+        leadTimeDays: 2,
+        paymentTerms: "TEMPO_30",
+        grade: "HDPE Virgin Blow Moulding Grade",
+        notes: "Melt Flow Rate 0.05, kemasan zak 25kg palletized, COA resmi pabrik.",
+        isBestPrice: true,
+      },
+      {
+        productName: "Biji Plastik HDPE Virgin Granule",
+        category: "Bahan Baku Plastik",
+        vendorName: "PT Lotte Chemical Titan Tbk",
+        vendorPhone: "021-57851860",
+        vendorWhatsapp: "081288334455",
+        vendorAddress: "Setiabudi Atrium Lt. 8, Jl. HR Rasuna Said Kav 62, Jakarta Selatan",
+        unit: "ton",
+        unitPrice: 27400000,
+        minOrderQty: 5,
+        leadTimeDays: 3,
+        paymentTerms: "TEMPO_60",
+        grade: "HDPE Titanven HD5218AA Injection Grade",
+        notes: "Kepadatan 0.954 g/cm3, sertifikasi Food Grade FDA approved.",
+        isBestPrice: false,
+      },
+      {
+        productName: "Biji Plastik HDPE Virgin Granule",
+        category: "Bahan Baku Plastik",
+        vendorName: "CV Plastindo Mandiri Cikarang",
+        vendorPhone: "021-8983000",
+        vendorWhatsapp: "081388997700",
+        vendorAddress: "Kawasan Industri Delta Silicon 3, Lippo Cikarang, Bekasi",
+        unit: "ton",
+        unitPrice: 28200000,
+        minOrderQty: 1,
+        leadTimeDays: 1,
+        paymentTerms: "COD",
+        grade: "HDPE Prime Reprocessed Blend",
+        notes: "Cocok untuk ember, botol industri, dan pipa non-food.",
+        isBestPrice: false,
+      },
+      {
+        productName: "Kabel Tembaga Industri NYY 4x16mm",
+        category: "Komponen & Listrik",
+        vendorName: "Toko Kabel Jaya Makmur Glodok",
+        vendorPhone: "081377889900",
+        vendorWhatsapp: "081377889900",
+        vendorAddress: "Glodok Plaza Blok B No. 12, Jl. Pinangsia Raya, Jakarta Barat",
+        unit: "meter",
+        unitPrice: 110000,
+        minOrderQty: 50,
+        leadTimeDays: 1,
+        paymentTerms: "TEMPO_30",
+        grade: "SNI 04-6629 Standar PLN",
+        notes: "Konduktor tembaga murni 99.9%, isolasi ganda PVC 0.6/1kV.",
+        isBestPrice: true,
+      },
+      {
+        productName: "Kabel Tembaga Industri NYY 4x16mm",
+        category: "Komponen & Listrik",
+        vendorName: "PT Supreme Cable Manufacturing (SUCACO)",
+        vendorPhone: "021-6198501",
+        vendorWhatsapp: "081299887766",
+        vendorAddress: "Jl. Kebon Sirih No. 71, Jakarta Pusat",
+        unit: "meter",
+        unitPrice: 118500,
+        minOrderQty: 200,
+        leadTimeDays: 4,
+        paymentTerms: "TEMPO_60",
+        grade: "Heavy Duty Industrial Grade (SUCACO Original)",
+        notes: "Drum kayu bersegel, uji tahan api dan abrasi lingkungan pabrik.",
+        isBestPrice: false,
+      },
+      {
+        productName: "Pelat Baja Lembaran Hot Rolled Coil (HRC)",
+        category: "Logam & Manufaktur",
+        vendorName: "PT Krakatau Steel Tbk",
+        vendorPhone: "0254-392000",
+        vendorWhatsapp: "081299112233",
+        vendorAddress: "Kawasan Industri Krakatau, Jl. Industri No. 5, Cilegon, Banten",
+        unit: "kg",
+        unitPrice: 15800,
+        minOrderQty: 1000,
+        leadTimeDays: 5,
+        paymentTerms: "TEMPO_30",
+        grade: "JIS G3101 SS400 (Tebal 3.0mm - 12.0mm)",
+        notes: "Mill Test Certificate (MTC) terlampir, toleransi ketebalan presisi.",
+        isBestPrice: true,
+      },
+      {
+        productName: "Pelat Baja Lembaran Hot Rolled Coil (HRC)",
+        category: "Logam & Manufaktur",
+        vendorName: "PT Gunung Raja Paksi Tbk",
+        vendorPhone: "021-89840999",
+        vendorWhatsapp: "081122334455",
+        vendorAddress: "Jl. Perjuangan No. 8, Sukadanau, Cikarang Barat, Bekasi",
+        unit: "kg",
+        unitPrice: 16400,
+        minOrderQty: 500,
+        leadTimeDays: 2,
+        paymentTerms: "TEMPO_14",
+        grade: "ASTM A36 Structural Steel Coil",
+        notes: "Siap potong lembaran sesuai pesanan (*custom slitting*).",
+        isBestPrice: false,
+      },
+      {
+        productName: "Bahan Kimia Isopropyl Alcohol (IPA 99.8%)",
+        category: "Bahan Kimia & Pelarut",
+        vendorName: "PT Lautan Luas Tbk",
+        vendorPhone: "021-53677777",
+        vendorWhatsapp: "081234567800",
+        vendorAddress: "Graha Lautan Luas, Jl. Kebon Jeruk Raya No. 40, Jakarta Barat",
+        unit: "drum",
+        unitPrice: 3250000,
+        minOrderQty: 2,
+        leadTimeDays: 2,
+        paymentTerms: "TEMPO_30",
+        grade: "Electronic & Industrial Grade 99.8%",
+        notes: "Drum besi 200 Liter, MSDS & COA lengkap, pembersih gemuk dan pelarut tinta.",
+        isBestPrice: true,
+      },
+      {
+        productName: "Karton Box Corrugated (40x30x30 cm)",
+        category: "Kemasan & Packaging",
+        vendorName: "PT Fajar Surya Wisesa Tbk",
+        vendorPhone: "021-89830500",
+        vendorWhatsapp: "081388776655",
+        vendorAddress: "Jl. Abdul Muis No. 30, Jakarta Pusat (Pabrik: Cikarang Barat)",
+        unit: "pcs",
+        unitPrice: 7800,
+        minOrderQty: 500,
+        leadTimeDays: 3,
+        paymentTerms: "TEMPO_30",
+        grade: "Double Wall K150/M125/K150 (Flute B/C)",
+        notes: "Kuat tumpukan hingga 5 tingkat, tahan benturan ekspedisi.",
+        isBestPrice: true,
+      },
+    ];
+
+    for (const q of defaultQuotes) {
+      await prisma.vendorPriceItem.create({ data: q });
+    }
+
+    activeVendorPrices = await prisma.vendorPriceItem.findMany({
+      orderBy: [{ productName: "asc" }, { unitPrice: "asc" }],
+    });
+  }
 
   // Rekonsiliasi Otomatis Real-time: jika gudang telah menerima barang (status RECEIVED),
   // pastikan database Purchasing langsung tersinkronkan
@@ -147,6 +308,7 @@ export async function getPurchasingDashboardData() {
     vendors,
     deliveryNotifications,
     taxSetting,
+    vendorPrices: activeVendorPrices,
     purchaseOrders: purchaseOrders.map((po) => ({
       ...po,
       items: JSON.parse(po.itemsJson || "[]"),
@@ -486,6 +648,117 @@ export async function recordPoPayment(data: {
 
     revalidatePath("/");
     return { success: true, message: `Status pembayaran PO ${po.poNumber} berhasil diperbarui!` };
+  } catch (e: any) {
+    return { success: false, error: e.message };
+  }
+}
+
+// 7. Pengelolaan Katalog Penawaran Harga Bahan Baku & Komparasi Vendor
+export async function createOrUpdateVendorPrice(data: {
+  id?: string;
+  productName: string;
+  category?: string;
+  vendorName: string;
+  vendorPhone?: string;
+  vendorWhatsapp?: string;
+  vendorAddress?: string;
+  unit: string;
+  unitPrice: number;
+  minOrderQty?: number;
+  leadTimeDays?: number;
+  paymentTerms?: string;
+  grade?: string;
+  notes?: string;
+}) {
+  try {
+    const cleanProductName = data.productName.trim();
+    const cleanVendorName = data.vendorName.trim();
+
+    if (!cleanProductName || !cleanVendorName || data.unitPrice <= 0) {
+      return { success: false, error: "Nama produk, nama vendor, dan harga satuan valid wajib diisi." };
+    }
+
+    if (data.id) {
+      await prisma.vendorPriceItem.update({
+        where: { id: data.id },
+        data: {
+          productName: cleanProductName,
+          category: data.category || "Bahan Baku",
+          vendorName: cleanVendorName,
+          vendorPhone: data.vendorPhone || null,
+          vendorWhatsapp: data.vendorWhatsapp || null,
+          vendorAddress: data.vendorAddress || null,
+          unit: data.unit || "kg",
+          unitPrice: Number(data.unitPrice),
+          minOrderQty: Number(data.minOrderQty) || 1,
+          leadTimeDays: Number(data.leadTimeDays) || 3,
+          paymentTerms: data.paymentTerms || "TEMPO_30",
+          grade: data.grade || null,
+          notes: data.notes || null,
+        },
+      });
+    } else {
+      await prisma.vendorPriceItem.create({
+        data: {
+          productName: cleanProductName,
+          category: data.category || "Bahan Baku",
+          vendorName: cleanVendorName,
+          vendorPhone: data.vendorPhone || null,
+          vendorWhatsapp: data.vendorWhatsapp || null,
+          vendorAddress: data.vendorAddress || null,
+          unit: data.unit || "kg",
+          unitPrice: Number(data.unitPrice),
+          minOrderQty: Number(data.minOrderQty) || 1,
+          leadTimeDays: Number(data.leadTimeDays) || 3,
+          paymentTerms: data.paymentTerms || "TEMPO_30",
+          grade: data.grade || null,
+          notes: data.notes || null,
+        },
+      });
+    }
+
+    // Rekalkulasi penanda isBestPrice untuk produk ini
+    const allForProduct = await prisma.vendorPriceItem.findMany({
+      where: { productName: cleanProductName },
+      orderBy: { unitPrice: "asc" },
+    });
+
+    if (allForProduct.length > 0) {
+      const minPrice = allForProduct[0].unitPrice;
+      for (const item of allForProduct) {
+        await prisma.vendorPriceItem.update({
+          where: { id: item.id },
+          data: { isBestPrice: item.unitPrice === minPrice },
+        });
+      }
+    }
+
+    revalidatePath("/");
+    return { success: true, message: `Penawaran harga untuk "${cleanProductName}" dari "${cleanVendorName}" berhasil disimpan!` };
+  } catch (e: any) {
+    return { success: false, error: e.message };
+  }
+}
+
+export async function deleteVendorPrice(id: string) {
+  try {
+    const item = await prisma.vendorPriceItem.delete({ where: { id } });
+    // Update best price for remaining
+    const allForProduct = await prisma.vendorPriceItem.findMany({
+      where: { productName: item.productName },
+      orderBy: { unitPrice: "asc" },
+    });
+    if (allForProduct.length > 0) {
+      const minPrice = allForProduct[0].unitPrice;
+      for (const it of allForProduct) {
+        await prisma.vendorPriceItem.update({
+          where: { id: it.id },
+          data: { isBestPrice: it.unitPrice === minPrice },
+        });
+      }
+    }
+    revalidatePath("/");
+    return { success: true, message: "Penawaran harga berhasil dihapus." };
   } catch (e: any) {
     return { success: false, error: e.message };
   }

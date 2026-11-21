@@ -114,3 +114,24 @@ model TaxSetting {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 }
+
+// 6. Katalog Penawaran Harga Bahan Baku & Komparasi Vendor
+model VendorPriceItem {
+  id             String   @id @default(cuid())
+  productName    String   // Nama Bahan Baku / Material (misal: Biji Plastik HDPE Virgin)
+  category       String   @default("Bahan Baku") // Bahan Baku, Logam & Baja, Kimia, Kemasan, Komponen
+  vendorName     String   // Nama Perusahaan / Vendor Penyedia
+  vendorPhone    String?  // Kontak Telepon
+  vendorWhatsapp String?  // WhatsApp Sales / Rekanan
+  vendorAddress  String?  // Alamat Pabrik / Gudang Vendor
+  unit           String   @default("kg") // Satuan: ton, kg, meter, roll, sak, pcs
+  unitPrice      Float    // Harga Penawaran Satuan (Rp)
+  minOrderQty    Int      @default(1) // Minimal Pembelian (MOQ)
+  leadTimeDays   Int      @default(3) // Estimasi Pengiriman (Hari)
+  paymentTerms   String   @default("TEMPO_30") // Tempo 30 Hari, COD, Cash Dimuka, DP 50%
+  grade          String?  // Spesifikasi Teknis / Grade (misal: Food Grade, Injection Moulding)
+  notes          String?  // Catatan Tambahan Penawaran
+  isBestPrice    Boolean  @default(false) // Penanda Harga Termurah
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
