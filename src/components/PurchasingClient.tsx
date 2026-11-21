@@ -46,6 +46,7 @@ import {
   TrendingUp,
   Truck,
   Eye,
+  Camera,
   Clock,
   Bell,
   Store,
@@ -2404,6 +2405,12 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                               <span className="text-slate-300">•</span>
                               <span className="text-slate-500 font-normal">{formatTime(po.createdAt)}</span>
                             </span>
+                            {po.status === "RECEIVED" && (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-sky-900 bg-sky-50 border border-sky-200 px-2 py-0.5 rounded-md shadow-2xs">
+                                <Truck className="w-3 h-3 text-sky-600" />
+                                <span>Masuk: {formatDate(po.receivedAt)} ({formatTime(po.receivedAt)})</span>
+                              </span>
+                            )}
                             <span className="text-[10px] text-slate-500">
                               {po.items.length} Barang • Oleh {po.createdBy}
                             </span>
@@ -2425,6 +2432,19 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
 
                         {/* Action Buttons */}
                         <div className="flex items-center gap-1.5">
+                          {/* Tombol Lihat Bukti Foto Kedatangan */}
+                          {po.status === "RECEIVED" && (
+                            <button
+                              type="button"
+                              onClick={() => setSelectedDeliveryProof(po)}
+                              className="p-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-lg text-xs cursor-pointer flex items-center gap-1 transition"
+                              title="Lihat Bukti Foto & Tanggal, Jam:Menit Kedatangan Fisik"
+                            >
+                              <Camera className="w-3.5 h-3.5 text-emerald-600" />
+                              <span className="text-[10px] font-bold">Bukti</span>
+                            </button>
+                          )}
+
                           {/* Tombol Kirim WhatsApp */}
                           <button
                             type="button"
@@ -2815,8 +2835,19 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                       </span>
                     </th>
                     <th className="p-3">Vendor / Pemasok</th>
-                    <th className="p-3">Daftar Barang</th>
+                    <th className="p-3">
+                      <span className="inline-flex items-center gap-1 text-slate-800">
+                        <Package className="w-3.5 h-3.5 text-indigo-600" />
+                        <span>Nama Item &amp; Kuantitas</span>
+                      </span>
+                    </th>
                     <th className="p-3 text-right">Total Tagihan</th>
+                    <th className="p-3 text-center">
+                      <span className="inline-flex items-center gap-1 text-slate-800">
+                        <Truck className="w-3.5 h-3.5 text-sky-600" />
+                        <span>Tanggal Masuk Barang</span>
+                      </span>
+                    </th>
                     <th className="p-3 text-center">Status Gudang</th>
                     <th className="p-3 text-center">Status Pembayaran (Kasir)</th>
                     <th className="p-3 text-center">Aksi Cepat</th>
@@ -2825,7 +2856,7 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                 <tbody className="divide-y divide-slate-100">
                   {filteredPurchaseOrders.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="text-center py-10 px-4">
+                      <td colSpan={9} className="text-center py-10 px-4">
                         <Filter className="w-8 h-8 text-slate-300 mx-auto mb-2" />
                         <p className="text-xs font-bold text-slate-700">Tidak ada Purchase Order yang cocok</p>
                         <p className="text-[11px] text-slate-500 max-w-md mx-auto mt-0.5">
@@ -2874,10 +2905,16 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                         {po.supplierPhone && <span className="text-[10px] text-slate-500">📞 {po.supplierPhone}</span>}
                       </td>
                       <td className="p-3">
-                        <div className="space-y-0.5">
+                        <div className="space-y-1">
                           {po.items.map((it: any, i: number) => (
-                            <div key={i} className="text-[11px] text-slate-700">
-                              • <b>{it.productName}</b>: {it.quantity} {it.unit}
+                            <div key={i} className="text-xs text-slate-800 flex items-start gap-1">
+                              <span className="text-emerald-600 font-bold">•</span>
+                              <div>
+                                <span className="font-bold text-slate-900">{it.productName}</span>
+                                <span className="text-[10px] font-mono font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-1.5 py-0.2 rounded ml-1.5">
+                                  {it.quantity} {it.unit}
+                                </span>
+                              </div>
                             </div>
                           ))}
                         </div>
@@ -2887,6 +2924,45 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                         <span className="text-[10px] text-slate-400 block font-normal">
                           {po.taxRate ? `Termasuk PPN ${po.taxRate}%` : "Bebas PPN (0%)"}
                         </span>
+                      </td>
+                      <td className="p-3 text-center whitespace-nowrap">
+                        {po.status === "RECEIVED" ? (
+                          <div className="inline-flex flex-col items-center">
+                            <div className="flex items-center gap-1 text-xs font-bold text-slate-900">
+                              <Calendar className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                              <span>{formatDate(po.receivedAt)}</span>
+                            </div>
+                            <div className="flex items-center gap-1 text-[11px] font-mono font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded mt-0.5">
+                              <Clock className="w-3 h-3 text-emerald-600 shrink-0" />
+                              <span>{formatTime(po.receivedAt)}</span>
+                            </div>
+                            <span className="text-[10px] text-slate-500 mt-0.5">
+                              🏢 {po.receivedWarehouse || "Gudang Utama"}
+                            </span>
+                            {po.receiptPhotoUrl ? (
+                              <button
+                                type="button"
+                                onClick={() => setSelectedDeliveryProof(po)}
+                                className="mt-1 text-[10px] font-bold text-sky-700 bg-sky-50 hover:bg-sky-100 border border-sky-200 px-2 py-0.5 rounded-md cursor-pointer transition inline-flex items-center gap-1 shadow-2xs"
+                                title="Lihat Foto Bukti & Jam:Menit Kedatangan Fisik"
+                              >
+                                <Camera className="w-3 h-3 text-sky-600" />
+                                <span>Bukti Foto</span>
+                              </button>
+                            ) : (
+                              <span className="text-[9px] text-slate-400 mt-0.5">Fisik Terverifikasi</span>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="inline-flex flex-col items-center">
+                            <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200">
+                              Belum Masuk
+                            </span>
+                            <span className="text-[10px] text-slate-400 mt-0.5">
+                              {po.expectedDeliveryDate ? `Target: ${formatDate(po.expectedDeliveryDate)}` : "Menunggu Kedatangan"}
+                            </span>
+                          </div>
+                        )}
                       </td>
                       <td className="p-3 text-center">
                         {po.status === "RECEIVED" ? (
@@ -5531,32 +5607,40 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
 
       {/* MODAL BUKTI PENERIMAAN / KEDATANGAN BARANG DARI GUDANG */}
       {selectedDeliveryProof && (
-        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-xl w-full p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto space-y-4">
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-xl w-full p-6 shadow-2xl relative max-h-[92vh] overflow-y-auto space-y-4 animate-scaleUp">
             <button
               type="button"
               onClick={() => setSelectedDeliveryProof(null)}
-              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 cursor-pointer"
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-700 cursor-pointer p-1 rounded-lg hover:bg-slate-100 transition"
             >
               <X className="w-5 h-5" />
             </button>
 
-            {/* Header */}
-            <div className="flex items-center gap-3 border-b border-slate-100 pb-3">
-              <div className="p-3 bg-emerald-100 text-emerald-700 rounded-2xl">
-                <Truck className="w-6 h-6" />
+            {/* Header Modal Bukti Kedatangan */}
+            <div className="flex items-start gap-3 border-b border-slate-100 pb-3">
+              <div className="w-11 h-11 rounded-xl bg-emerald-100 text-emerald-800 flex items-center justify-center shrink-0 shadow-xs">
+                <Truck className="w-6 h-6 text-emerald-700" />
               </div>
               <div>
-                <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full uppercase">
-                  Konfirmasi Kedatangan Barang
-                </span>
-                <h2 className="text-lg font-black text-slate-900 mt-0.5">
-                  Bukti Penerimaan Fisik {selectedDeliveryProof.poNumber}
-                </h2>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100 border border-emerald-300 px-2.5 py-0.5 rounded-full uppercase tracking-wider">
+                    Bukti Fisik Barang Masuk Gudang
+                  </span>
+                  <span className="text-[10px] font-mono text-slate-500 font-bold">
+                    {selectedDeliveryProof.poNumber}
+                  </span>
+                </div>
+                <h3 className="text-lg font-black text-slate-900 mt-0.5">
+                  Verifikasi Kedatangan &amp; Bukti Foto Barang
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Data fisik barang yang telah diverifikasi dan dikirimkan oleh Staf Gudang ke Tim Purchasing
+                </p>
               </div>
             </div>
 
-            {/* Data Gudang & Penerima */}
+            {/* Kartu Grid Rincian Tanggal Masuk, Jam & Menit, Gudang, Vendor */}
             <div className="bg-slate-50 rounded-xl p-4 border border-slate-200 grid grid-cols-2 gap-3 text-xs">
               <div>
                 <span className="text-[10px] uppercase font-bold text-slate-400 block">Pemasok / Vendor:</span>
@@ -5565,76 +5649,51 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
               <div>
                 <span className="text-[10px] uppercase font-bold text-slate-400 block">Lokasi Gudang Penerima:</span>
                 <p className="font-bold text-slate-900 text-sm">
-                  🏢 {selectedDeliveryProof.receivedWarehouse || "Gudang Utama Jakarta"}
+                  🏢 {selectedDeliveryProof.receivedWarehouse || "Gudang Utama"}
                 </p>
               </div>
-              <div>
+              <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                <span className="text-[10px] uppercase font-bold text-slate-400 block">Tanggal Masuk Barang:</span>
+                <p className="font-bold text-slate-900 text-xs flex items-center gap-1 mt-0.5">
+                  <Calendar className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  <span>{formatDate(selectedDeliveryProof.receivedAt)}</span>
+                </p>
+              </div>
+              <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                <span className="text-[10px] uppercase font-bold text-slate-400 block">Jam &amp; Menit Masuk:</span>
+                <p className="font-mono font-bold text-emerald-800 text-xs flex items-center gap-1 mt-0.5">
+                  <Clock className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  <span>{formatTime(selectedDeliveryProof.receivedAt)}</span>
+                </p>
+              </div>
+              <div className="col-span-2">
                 <span className="text-[10px] uppercase font-bold text-slate-400 block">Petugas Penerima Gudang:</span>
-                <p className="font-semibold text-emerald-800">
+                <p className="font-semibold text-emerald-800 text-xs mt-0.5">
                   👤 {selectedDeliveryProof.receivedBy || "Staf Penerimaan Gudang"}
                 </p>
               </div>
-              <div>
-                <span className="text-[10px] uppercase font-bold text-slate-400 block">Waktu Barang Sampai:</span>
-                <p className="font-semibold text-slate-700">
-                  🕒 {formatDate(selectedDeliveryProof.receivedAt)}
-                </p>
-              </div>
             </div>
 
-            {/* Catatan Fisik Gudang */}
-            <div className="bg-emerald-50/70 border border-emerald-200/80 rounded-xl p-3.5 text-xs">
-              <span className="text-[10px] uppercase font-bold text-emerald-800 block mb-1">
-                Catatan Pemeriksaan Fisik Staf Gudang:
-              </span>
-              <p className="text-slate-800 font-medium italic">
-                "{selectedDeliveryProof.receiptNotes || "Barang pesanan telah tiba lengkap, fisik utuh dan sesuai dengan spesifikasi PO."}"
-              </p>
-            </div>
-
-            {/* Foto Bukti Fisik dengan Cap Watermark Timestamp */}
-            <div>
-              <span className="text-xs font-bold text-slate-800 block mb-1.5 flex items-center justify-between">
-                <span>Foto Bukti Fisik Barang / Surat Jalan dari Gudang:</span>
-                {selectedDeliveryProof.receiptTimestamp && (
-                  <span className="text-[10px] font-mono text-emerald-700 font-bold bg-emerald-100 px-2 py-0.5 rounded">
-                    Timestamp: {selectedDeliveryProof.receiptTimestamp}
-                  </span>
-                )}
-              </span>
-
-              {selectedDeliveryProof.receiptPhotoUrl ? (
-                <div className="relative rounded-xl overflow-hidden border-2 border-emerald-500 shadow-md bg-slate-900">
-                  <img
-                    src={selectedDeliveryProof.receiptPhotoUrl}
-                    alt="Bukti Kedatangan Gudang"
-                    className="w-full object-contain max-h-72 mx-auto"
-                  />
-                  <div className="p-2.5 bg-slate-900/90 text-white flex items-center justify-between text-xs font-mono">
-                    <span className="flex items-center gap-1.5 text-emerald-400">
-                      <BadgeCheck className="w-4 h-4" />
-                      <span>Terverifikasi GPS & Timestamp Gudang</span>
-                    </span>
-                    <span>{selectedDeliveryProof.receiptTimestamp || "Waktu Otomatis"}</span>
-                  </div>
-                </div>
-              ) : (
-                <div className="p-8 text-center bg-slate-100 rounded-xl border border-dashed border-slate-300 text-xs text-slate-500">
-                  <Package className="w-8 h-8 mx-auto text-slate-400 mb-2" />
-                  <p>Penerimaan telah diverifikasi secara sah oleh sistem gudang.</p>
-                </div>
-              )}
-            </div>
-
-            {/* Rincian Barang yang Masuk */}
+            {/* Rincian Nama Item Barang yang Masuk */}
             {selectedDeliveryProof.items && selectedDeliveryProof.items.length > 0 && (
-              <div className="border-t border-slate-100 pt-3">
-                <span className="text-xs font-bold text-slate-800 block mb-2">Rincian Barang yang Diterima Masuk:</span>
-                <div className="space-y-1.5">
+              <div className="border border-slate-200 rounded-xl p-3.5 bg-white space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                    <Package className="w-4 h-4 text-indigo-600" />
+                    <span>Daftar Nama Item Barang Yang Diterima:</span>
+                  </span>
+                  <span className="text-[10px] font-mono text-slate-500 font-bold bg-slate-100 px-2 py-0.5 rounded">
+                    {selectedDeliveryProof.items.length} Item
+                  </span>
+                </div>
+                <div className="divide-y divide-slate-100">
                   {selectedDeliveryProof.items.map((it: any, i: number) => (
-                    <div key={i} className="flex items-center justify-between p-2.5 bg-slate-50 rounded-lg text-xs">
-                      <span className="font-semibold text-slate-800">• {it.productName}</span>
-                      <span className="font-mono font-bold text-emerald-700 bg-emerald-100 px-2.5 py-0.5 rounded">
+                    <div key={i} className="py-2 flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0"></span>
+                        <span className="font-bold text-slate-800">{it.productName}</span>
+                      </div>
+                      <span className="font-mono font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded">
                         +{it.quantity} {it.unit}
                       </span>
                     </div>
@@ -5643,13 +5702,70 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
               </div>
             )}
 
-            <div className="pt-2 flex justify-end">
+            {/* Catatan Pemeriksaan Gudang */}
+            <div className="bg-emerald-50/70 border border-emerald-200 rounded-xl p-3 text-xs">
+              <span className="text-[10px] uppercase font-bold text-emerald-800 block mb-0.5">
+                Catatan Pemeriksaan Staf Gudang:
+              </span>
+              <p className="text-slate-800 font-medium italic text-[11px]">
+                "{selectedDeliveryProof.receiptNotes || "Barang pesanan telah tiba lengkap, fisik utuh dan sesuai spesifikasi PO."}"
+              </p>
+            </div>
+
+            {/* Foto Bukti Fisik Barang dengan Gambar, Jam dan Menit, Tanggal */}
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                  <Camera className="w-4 h-4 text-emerald-600" />
+                  <span>Foto Bukti Fisik Kedatangan / Surat Jalan:</span>
+                </span>
+                {selectedDeliveryProof.receiptTimestamp && (
+                  <span className="text-[10px] font-mono font-bold text-emerald-800 bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded">
+                    Stempel: {selectedDeliveryProof.receiptTimestamp}
+                  </span>
+                )}
+              </div>
+
+              {selectedDeliveryProof.receiptPhotoUrl ? (
+                <div className="relative rounded-xl overflow-hidden border-2 border-emerald-500 shadow-md bg-slate-900 group">
+                  <img
+                    src={selectedDeliveryProof.receiptPhotoUrl}
+                    alt="Bukti Kedatangan Gudang"
+                    className="w-full object-contain max-h-80 mx-auto"
+                  />
+                  {/* Overlay Watermark Tanggal, Jam dan Menit, serta Nama Item */}
+                  <div className="p-3 bg-gradient-to-t from-slate-950 via-slate-900/90 to-transparent text-white space-y-1">
+                    <div className="flex items-center justify-between text-xs font-mono">
+                      <span className="flex items-center gap-1.5 text-emerald-400 font-bold">
+                        <BadgeCheck className="w-4 h-4" />
+                        <span>Terverifikasi Kedatangan Gudang</span>
+                      </span>
+                      <span className="text-[11px] text-slate-300 font-bold">
+                        {formatDate(selectedDeliveryProof.receivedAt)} • {formatTime(selectedDeliveryProof.receivedAt)}
+                      </span>
+                    </div>
+                    {selectedDeliveryProof.items && selectedDeliveryProof.items.length > 0 && (
+                      <p className="text-[10px] text-slate-300 truncate">
+                        Item: {selectedDeliveryProof.items.map((it: any) => it.productName).join(", ")}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="p-8 text-center bg-slate-100 rounded-xl border border-dashed border-slate-300 text-xs text-slate-500">
+                  <Package className="w-8 h-8 mx-auto text-slate-400 mb-2" />
+                  <p>Penerimaan fisik barang telah diverifikasi secara sah oleh sistem gudang.</p>
+                </div>
+              )}
+            </div>
+
+            <div className="pt-2 flex items-center justify-end">
               <button
                 type="button"
                 onClick={() => setSelectedDeliveryProof(null)}
-                className="bg-slate-900 hover:bg-black text-white px-5 py-2 rounded-xl text-xs font-bold cursor-pointer transition"
+                className="bg-slate-900 hover:bg-black text-white px-5 py-2 rounded-xl text-xs font-bold cursor-pointer transition shadow-sm"
               >
-                Tutup
+                Tutup Bukti
               </button>
             </div>
           </div>

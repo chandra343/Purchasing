@@ -71,17 +71,31 @@ export async function POST(request: Request) {
 
     // 3. Kirim notifikasi instan Telegram ke seluruh staf Purchasing yang mengaktifkan Telegram
     try {
+      let poItems: any[] = [];
+      try {
+        poItems = body.items && Array.isArray(body.items) ? body.items : JSON.parse(po.itemsJson || "[]");
+      } catch {
+        poItems = [];
+      }
+
+      const itemsSummary = poItems.map((it: any) => `• *${it.productName}*: ${it.quantity} ${it.unit || "pcs"}`).join("\n");
+      const dateFormatted = receiveDate.toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" });
+      const timeFormatted = receiveDate.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }) + " WIB";
+
       const receiptMsg =
-        `🚚 *BARANG TELAH TIBA DI GUDANG!*\n\n` +
+        `🚚 *BUKTI KEDATANGAN BARANG DITERIMA DARI GUDANG!*\n\n` +
         `No. PO: *${poNumber}*\n` +
         `Vendor: *${po.supplierName}*\n` +
         `Lokasi Gudang: *${warehouseName || "Gudang Utama"}*\n` +
         `Diterima Oleh: *${receivedBy || "Staf Gudang"}*\n` +
-        `Waktu Kedatangan: ${receiveDate.toLocaleString("id-ID")}\n` +
-        `Catatan: ${notes || "Barang fisik lengkap dan diverifikasi"}\n\n` +
+        `📅 *Tanggal Masuk Barang*: *${dateFormatted}*\n` +
+        `🕒 *Jam & Menit Masuk*: *${timeFormatted}*\n\n` +
+        (itemsSummary ? `📋 *Rincian Item Diterima:*\n${itemsSummary}\n\n` : "") +
+        (imageTimestamp ? `⏱️ *Stempel Waktu Foto*: \`${imageTimestamp}\`\n` : "") +
         (imageUrl
-          ? `📸 *Bukti Foto Penerimaan Tersedia*\nStaf gudang telah melampirkan foto verifikasi fisik barang. Cek dashboard Purchasing untuk melihat detailnya.`
+          ? `📸 *Bukti Foto Fisik & Surat Jalan Tersedia*\nStaf gudang telah melampirkan foto verifikasi fisik barang. Cek dashboard Purchasing untuk melihat bukti foto.`
           : `_Status PO ${poNumber} otomatis diperbarui menjadi RECEIVED._`);
+
       await broadcastToPurchasingStaff(receiptMsg);
     } catch (err) {
       console.warn("Telegram webhook receipt broadcast failed:", err);
