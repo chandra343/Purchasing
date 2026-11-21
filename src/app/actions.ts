@@ -15,6 +15,12 @@ import {
   syncOfficialIndonesianTax,
   INDONESIAN_TAX_CATEGORIES,
 } from "@/lib/pajakIndonesiaApi";
+import {
+  getTelegramConfig,
+  sendTelegramMessage,
+  broadcastToPurchasingStaff,
+  sendTelegramTestMessage,
+} from "@/lib/telegram";
 
 // 1. Autentikasi Menggunakan Nomor ID Card Karyawan Purchasing
 export async function loginStaffWithIdCard(idCard: string) {
@@ -56,6 +62,9 @@ export async function loginStaffWithIdCard(idCard: string) {
       name: staff.name,
       position: staff.position,
       role: staff.role,
+      telegramChatId: staff.telegramChatId,
+      telegramUsername: staff.telegramUsername,
+      telegramEnabled: staff.telegramEnabled,
     },
   };
 }
@@ -380,6 +389,7 @@ export async function getPurchasingDashboardData() {
     vendors,
     deliveryNotifications,
     taxSetting,
+    telegramConfig: await getTelegramConfig(),
     vendorPrices: activeVendorPrices,
     activityLogs: activeLogs,
     purchaseOrders: purchaseOrders.map((po) => ({
@@ -668,6 +678,22 @@ export async function createPurchaseOrder(data: {
       itemsCount: itemsWithSubtotal.length,
     },
   });
+
+  // 4. Kirim notifikasi Telegram ke Staf Purchasing yang terhubung
+  try {
+    const poMsg =
+      `📦 *PURCHASE ORDER BARU DITERBITKAN*\n\n` +
+      `No. PO: *${po.poNumber}*\n` +
+      `Vendor: *${po.supplierName}*\n` +
+      `Total Nilai: *Rp ${totalAmount.toLocaleString("id-ID")}* (${itemsWithSubtotal.length} barang)\n` +
+      `Status Bayar: *${paymentStatus}* (${paymentTerms})\n` +
+      `Dibuat Oleh: *${data.createdBy || "Tim Purchasing"}*\n` +
+      `Target Pengiriman: ${data.expectedDeliveryDate || "Sesuai Jadwal"}\n\n` +
+      `Data telah disinkronkan otomatis ke modul Gudang.`;
+    await broadcastToPurchasingStaff(poMsg);
+  } catch (err) {
+    console.warn("Telegram broadcast PO error:", err);
+  }
 
   revalidatePath("/");
   return po;
@@ -1095,5 +1121,127 @@ export async function deleteVendorPrice(id: string) {
     return { success: true, message: "Penawaran harga berhasil dihapus." };
   } catch (e: any) {
     return { success: false, error: e.message };
+  }
+}
+
+// 7. Pengaturan & Koneksi Telegram Staf Purchasing (Berdasarkan ID Card)
+export async function updateStaffTelegram(
+  idCard: string,
+  data: {
+    telegramChatId?: string;
+    telegramUsername?: string;
+    telegramEnabled: boolean;
+  }
+) {
+  try {
+    const cleanId = idCard.trim().toUpperCase();
+    const staff = await prisma.purchasingStaff.findFirst({
+      where: { idCard: cleanId },
+    });
+    if (!staff) {
+      return { success: false, error: `Staf Purchasing dengan ID Card "${idCard}" tidak ditemukan.` };
+    }
+
+    const updated = await prisma.purchasingStaff.update({
+      where: { id: staff.id },
+      data: {
+        telegramChatId: data.telegramChatId ? data.telegramChatId.trim() : null,
+        telegramUsername: data.telegramUsername ? data.telegramUsername.trim().replace(/^@/, "") : null,
+        telegramEnabled: Boolean(data.telegramEnabled),
+      },
+    });
+
+    await logActivity({
+      type: "TELEGRAM_UPDATE",
+      title: `Pengaturan Telegram ID Card ${cleanId}`,
+      description: `${staff.name} (${cleanId}) memperbarui status notifikasi Telegram: ${
+        data.telegramEnabled ? "Aktif" : "Nonaktif"
+      } (Chat ID: ${data.telegramChatId || "-"}).`,
+      actor: staff.name,
+      actorRole: staff.position || "Staf Purchasing",
+      referenceId: cleanId,
+    });
+
+    revalidatePath("/");
+    return {
+      success: true,
+      message: "Pengaturan Telegram ID Card Anda berhasil disimpan!",
+      staff: {
+        id: updated.id,
+        idCard: updated.idCard,
+        name: updated.name,
+        position: updated.position,
+        role: updated.role,
+        telegramChatId: updated.telegramChatId,
+        telegramUsername: updated.telegramUsername,
+        telegramEnabled: updated.telegramEnabled,
+      },
+    };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+// 8. Pengaturan Global Bot Telegram Perusahaan (BotFather Token & Username)
+export async function updateTelegramBotConfig(data: {
+  botToken?: string;
+  botUsername?: string;
+  isActive: boolean;
+}) {
+  try {
+    const cleanToken = data.botToken ? data.botToken.trim() : null;
+    const cleanUsername = data.botUsername ? data.botUsername.trim().replace(/^@/, "") : null;
+
+    await prisma.telegramConfig.upsert({
+      where: { id: "default" },
+      update: {
+        botToken: cleanToken,
+        botUsername: cleanUsername,
+        isActive: data.isActive,
+      },
+      create: {
+        id: "default",
+        botToken: cleanToken,
+        botUsername: cleanUsername,
+        isActive: data.isActive,
+      },
+    });
+
+    revalidatePath("/");
+    return { success: true, message: "Konfigurasi Bot Telegram Perusahaan berhasil diperbarui!" };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+// 9. Uji Coba Pengiriman Pesan Notifikasi Telegram ke Staf Terhubung
+export async function testStaffTelegramNotification(
+  idCard: string,
+  customChatId?: string
+) {
+  try {
+    const cleanId = idCard.trim().toUpperCase();
+    const staff = await prisma.purchasingStaff.findFirst({
+      where: { idCard: cleanId },
+    });
+    const name = staff ? staff.name : `Staf (${cleanId})`;
+    const chatId = customChatId ? customChatId.trim() : staff?.telegramChatId;
+
+    if (!chatId) {
+      return {
+        success: false,
+        error: "Nomor Chat ID Telegram belum diisi. Masukkan Chat ID Telegram Anda terlebih dahulu.",
+      };
+    }
+
+    const result = await sendTelegramTestMessage(
+      chatId,
+      name,
+      cleanId,
+      "Sistem Purchasing & Pengadaan"
+    );
+    return result;
+  } catch (err: any) {
+    return { success: false, error: err.message };
   }
 }

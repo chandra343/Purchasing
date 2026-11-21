@@ -79,6 +79,23 @@ Aplikasi Purchasing siap diakses di: **[http://localhost:3001](http://localhost:
 
 ---
 
+## 📱 Integrasi Notifikasi Telegram ID Card
+
+Setiap staf pengadaan dapat menghubungkan nomor ID Card mereka (misal: `PUR-001`, `PUR-002`, `PUR-003`) ke akun Telegram masing-masing untuk menerima notifikasi real-time:
+- 📦 **Penerbitan PO Baru**: Notifikasi instan saat PO diterbitkan beserta nilai transaksi, termin bayar, dan vendor.
+- 🚚 **Barang Tiba di Gudang**: Alert otomatis lengkap dengan konfirmasi penerimaan fisik dan bukti foto dari tim Gudang.
+- 📋 **Pengajuan Restock (PR)**: Notifikasi permintaan restock dari Kepala Gudang.
+- 💳 **Pencatatan Pembayaran**: Konfirmasi status pelunasan pembayaran kasir/purchasing.
+
+### Cara Menghubungkan ID Card ke Telegram:
+1. Buka dashboard Purchasing di `http://localhost:3001` dan masuk dengan nomor ID Card Anda.
+2. Klik tombol **📱 Hubungkan Telegram** di bilah atas (atau melalui menu profil akun).
+3. Buka Telegram dan cari bot `@userinfobot` untuk mendapatkan **Chat ID** Anda.
+4. Masukkan Chat ID pada modal integrasi, aktifkan centang notifikasi, lalu klik **Simpan Pengaturan ID Card**.
+5. Gunakan tombol **Kirim Pesan Uji Coba** untuk memverifikasi bot dapat mengirimkan pesan ke akun Anda.
+
+---
+
 ## 🔗 Ekosistem Terintegrasi
 
 | Aplikasi | Port | Repository GitHub | Deskripsi |

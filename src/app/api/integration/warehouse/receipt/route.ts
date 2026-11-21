@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { broadcastToPurchasingStaff } from "@/lib/telegram";
 
 // POST /api/integration/warehouse/receipt
 // Endpoint ini dipanggil secara real-time oleh Sistem Gudang (http://localhost:3000)
@@ -67,6 +68,24 @@ export async function POST(request: Request) {
         read: false,
       },
     });
+
+    // 3. Kirim notifikasi instan Telegram ke seluruh staf Purchasing yang mengaktifkan Telegram
+    try {
+      const receiptMsg =
+        `🚚 *BARANG TELAH TIBA DI GUDANG!*\n\n` +
+        `No. PO: *${poNumber}*\n` +
+        `Vendor: *${po.supplierName}*\n` +
+        `Lokasi Gudang: *${warehouseName || "Gudang Utama"}*\n` +
+        `Diterima Oleh: *${receivedBy || "Staf Gudang"}*\n` +
+        `Waktu Kedatangan: ${receiveDate.toLocaleString("id-ID")}\n` +
+        `Catatan: ${notes || "Barang fisik lengkap dan diverifikasi"}\n\n` +
+        (imageUrl
+          ? `📸 *Bukti Foto Penerimaan Tersedia*\nStaf gudang telah melampirkan foto verifikasi fisik barang. Cek dashboard Purchasing untuk melihat detailnya.`
+          : `_Status PO ${poNumber} otomatis diperbarui menjadi RECEIVED._`);
+      await broadcastToPurchasingStaff(receiptMsg);
+    } catch (err) {
+      console.warn("Telegram webhook receipt broadcast failed:", err);
+    }
 
     revalidatePath("/");
 

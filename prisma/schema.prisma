@@ -9,13 +9,26 @@ datasource db {
 
 // 1. Akun Pengguna / Staf Purchasing (Login ID Card)
 model PurchasingStaff {
-  id        String   @id @default(cuid())
-  idCard    String   @unique // Nomor ID Card Purchasing (misal: PUR-001)
-  name      String
-  position  String   @default("Staf Pengadaan")
-  role      String   @default("STAFF") // ADMIN, MANAGER, BUYER, STAFF
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id               String   @id @default(cuid())
+  idCard           String   @unique // Nomor ID Card Purchasing (misal: PUR-001)
+  name             String
+  position         String   @default("Staf Pengadaan")
+  role             String   @default("STAFF") // ADMIN, MANAGER, BUYER, STAFF
+  telegramChatId   String?  // ID Chat Telegram Pribadi (misal: 123456789)
+  telegramUsername String?  // Username Telegram (@username)
+  telegramEnabled  Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+// Konfigurasi Bot Telegram Perusahaan (Opsional / Terpusat)
+model TelegramConfig {
+  id          String   @id @default("default")
+  botToken    String?  // Token dari @BotFather
+  botUsername String?  // Username bot Telegram (@SistemPengadaanBot)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 // 2. Master Vendor / Rekanan Supplier
