@@ -94,10 +94,16 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
     setTimeout(() => setFeedbackMsg(null), 4000);
   }
 
-  // Active Navigation Tab
+  // Active Navigation Tab (4 Menu Utama: Ringkasan, Pesanan PO, Vendor & Harga, Riwayat)
   const [activeTab, setActiveTab] = useState<
-    "dashboard" | "orders" | "requisitions" | "priceComparison" | "priceManager" | "history" | "vendors" | "gudangCatalog"
+    "dashboard" | "orders" | "vendors" | "history" | "requisitions" | "priceComparison" | "priceManager" | "gudangCatalog"
   >("dashboard");
+
+  // Sub-tab untuk Tab Pesanan (PO & PR)
+  const [orderSubTab, setOrderSubTab] = useState<"ALL" | "WAITING" | "RECEIVED" | "UNPAID" | "PR">("ALL");
+
+  // Sub-tab untuk Tab Vendor & Harga (Katalog Komparasi, Update Harga, Direktori, Stok Gudang)
+  const [vendorSubTab, setVendorSubTab] = useState<"catalog" | "priceManager" | "directory" | "gudangStock">("catalog");
 
   // State Komparasi Harga Bahan Baku & Penawaran Vendor
   const [priceSearchQuery, setPriceSearchQuery] = useState<string>("");
@@ -325,18 +331,27 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
   const filteredPurchaseOrders = useMemo(() => {
     let list = [...(initialData.purchaseOrders || [])];
 
-    // Filter Status Kedatangan Gudang
-    if (poStatusFilter === "WAITING") {
+    // Filter berdasarkan Sub-Tab Pesanan Cepat
+    if (orderSubTab === "WAITING") {
       list = list.filter((po: any) => po.status !== "RECEIVED");
-    } else if (poStatusFilter === "RECEIVED") {
+    } else if (orderSubTab === "RECEIVED") {
       list = list.filter((po: any) => po.status === "RECEIVED");
-    }
-
-    // Filter Status Pembayaran Kasir
-    if (poPaymentFilter === "UNPAID") {
+    } else if (orderSubTab === "UNPAID") {
       list = list.filter((po: any) => po.paymentStatus !== "PAID");
-    } else if (poPaymentFilter === "PAID") {
-      list = list.filter((po: any) => po.paymentStatus === "PAID");
+    } else if (orderSubTab === "ALL") {
+      // Filter Status Kedatangan Gudang
+      if (poStatusFilter === "WAITING") {
+        list = list.filter((po: any) => po.status !== "RECEIVED");
+      } else if (poStatusFilter === "RECEIVED") {
+        list = list.filter((po: any) => po.status === "RECEIVED");
+      }
+
+      // Filter Status Pembayaran Kasir
+      if (poPaymentFilter === "UNPAID") {
+        list = list.filter((po: any) => po.paymentStatus !== "PAID");
+      } else if (poPaymentFilter === "PAID") {
+        list = list.filter((po: any) => po.paymentStatus === "PAID");
+      }
     }
 
     // Filter Vendor / Perusahaan
@@ -377,7 +392,7 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
     });
 
     return list;
-  }, [initialData.purchaseOrders, poStatusFilter, poPaymentFilter, poVendorFilter, poSearchQuery, poSortBy]);
+  }, [initialData.purchaseOrders, orderSubTab, poStatusFilter, poPaymentFilter, poVendorFilter, poSearchQuery, poSortBy]);
 
   // Handler Buka & Simpan Pembayaran Kasir
   const handleOpenPaymentModal = (po: any) => {
@@ -1663,120 +1678,166 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
           </div>
         )}
 
-        {/* Tab Navigation */}
-        <div className="flex items-center gap-1 border-b border-slate-200 overflow-x-auto pb-1 text-sm font-medium">
+        {/* Tab Navigation - 4 Menu Utama yang Rapi & Bebas Ribet */}
+        <div className="bg-white p-1.5 rounded-2xl border border-slate-200/90 shadow-xs grid grid-cols-2 md:grid-cols-4 gap-1.5 text-xs sm:text-sm font-semibold">
           <button
             type="button"
             onClick={() => setActiveTab("dashboard")}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
-              activeTab === "dashboard" ? "bg-emerald-50 text-emerald-800 font-bold" : "text-slate-600 hover:text-slate-900"
+            className={`flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl transition cursor-pointer text-center ${
+              activeTab === "dashboard"
+                ? "bg-emerald-600 text-white shadow-sm font-bold"
+                : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
             }`}
           >
-            <Boxes className="w-4 h-4" />
-            <span>Dashboard & Pengadaan Cepat</span>
+            <Boxes className="w-4 h-4 shrink-0" />
+            <span className="truncate">1. Ringkasan</span>
           </button>
 
           <button
             type="button"
-            onClick={() => setActiveTab("orders")}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
-              activeTab === "orders" ? "bg-emerald-50 text-emerald-800 font-bold" : "text-slate-600 hover:text-slate-900"
+            onClick={() => {
+              setActiveTab("orders");
+              setOrderSubTab("ALL");
+            }}
+            className={`flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl transition cursor-pointer text-center ${
+              activeTab === "orders" || activeTab === "requisitions"
+                ? "bg-emerald-600 text-white shadow-sm font-bold"
+                : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
             }`}
           >
-            <ShoppingCart className="w-4 h-4" />
-            <span>Purchase Orders (PO)</span>
-            <span className="text-[10px] bg-slate-100 text-slate-700 px-2 py-0.5 rounded-full font-bold">
+            <ShoppingCart className="w-4 h-4 shrink-0" />
+            <span className="truncate">2. Pesanan PO &amp; PR</span>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold shrink-0 ${
+              activeTab === "orders" || activeTab === "requisitions" ? "bg-emerald-800 text-white" : "bg-slate-100 text-slate-700"
+            }`}>
               {initialData.stats.totalPOs}
             </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab("requisitions")}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
-              activeTab === "requisitions" ? "bg-emerald-50 text-emerald-800 font-bold" : "text-slate-600 hover:text-slate-900"
-            }`}
-          >
-            <Send className="w-4 h-4" />
-            <span>Permintaan dari Gudang (PR)</span>
             {initialData.stats.pendingPRsGudangCount > 0 && (
-              <span className="text-[10px] bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded-full border border-amber-300">
-                {initialData.stats.pendingPRsGudangCount} Permintaan
+              <span className="text-[10px] bg-amber-400 text-slate-950 font-black px-1.5 py-0.5 rounded-full animate-pulse shrink-0" title="Ada permintaan barang dari Gudang">
+                {initialData.stats.pendingPRsGudangCount} PR
               </span>
             )}
           </button>
 
           <button
             type="button"
-            onClick={() => setActiveTab("priceComparison")}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
-              activeTab === "priceComparison" ? "bg-emerald-50 text-emerald-800 font-bold" : "text-slate-600 hover:text-slate-900"
+            onClick={() => {
+              setActiveTab("vendors");
+              setVendorSubTab("catalog");
+            }}
+            className={`flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl transition cursor-pointer text-center ${
+              activeTab === "vendors" || activeTab === "priceComparison" || activeTab === "priceManager" || activeTab === "gudangCatalog"
+                ? "bg-emerald-600 text-white shadow-sm font-bold"
+                : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
             }`}
           >
-            <Scale className="w-4 h-4 text-emerald-600" />
-            <span>Katalog Harga Bahan Baku</span>
-            <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-bold">
+            <Tag className="w-4 h-4 shrink-0" />
+            <span className="truncate">3. Vendor &amp; Harga</span>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold shrink-0 ${
+              activeTab === "vendors" || activeTab === "priceComparison" || activeTab === "priceManager" || activeTab === "gudangCatalog"
+                ? "bg-emerald-800 text-white"
+                : "bg-slate-100 text-slate-700"
+            }`}>
               {initialData.vendorPrices?.length || 0}
             </span>
           </button>
 
           <button
             type="button"
-            onClick={() => setActiveTab("priceManager")}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
-              activeTab === "priceManager" ? "bg-indigo-50 text-indigo-800 font-bold" : "text-slate-600 hover:text-slate-900"
-            }`}
-          >
-            <RotateCcw className="w-4 h-4 text-indigo-600" />
-            <span>Update Harga Vendor</span>
-            <span className="text-[10px] bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded-full font-bold">
-              Fitur Ubah
-            </span>
-          </button>
-
-          <button
-            type="button"
             onClick={() => setActiveTab("history")}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
-              activeTab === "history" ? "bg-blue-50 text-blue-800 font-bold" : "text-slate-600 hover:text-slate-900"
+            className={`flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl transition cursor-pointer text-center ${
+              activeTab === "history"
+                ? "bg-emerald-600 text-white shadow-sm font-bold"
+                : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
             }`}
           >
-            <History className="w-4 h-4 text-blue-600" />
-            <span>Riwayat Aktivitas</span>
-            <span className="text-[10px] bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full font-bold">
+            <History className="w-4 h-4 shrink-0" />
+            <span className="truncate">4. Riwayat Aktivitas</span>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold shrink-0 ${
+              activeTab === "history" ? "bg-emerald-800 text-white" : "bg-slate-100 text-slate-700"
+            }`}>
               {initialData.activityLogs?.length || 0}
             </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab("vendors")}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
-              activeTab === "vendors" ? "bg-emerald-50 text-emerald-800 font-bold" : "text-slate-600 hover:text-slate-900"
-            }`}
-          >
-            <Building2 className="w-4 h-4" />
-            <span>Direktori Vendor & Supplier</span>
-            <span className="text-[10px] bg-slate-100 text-slate-700 px-2 py-0.5 rounded-full font-bold">
-              {initialData.stats.totalVendors}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab("gudangCatalog")}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
-              activeTab === "gudangCatalog" ? "bg-emerald-50 text-emerald-800 font-bold" : "text-slate-600 hover:text-slate-900"
-            }`}
-          >
-            <Package className="w-4 h-4" />
-            <span>Katalog Stok Gudang (Sync)</span>
           </button>
         </div>
 
         {/* TAB 1: DASHBOARD & PENGADAAN CEPAT */}
         {activeTab === "dashboard" && (
           <div className="space-y-6">
+            {/* Quick Action Hub - Tombol Pintas Aksi Cepat agar Sangat Mudah Digunakan */}
+            <div className="bg-gradient-to-r from-emerald-50 via-teal-50 to-blue-50 border border-emerald-200/80 rounded-2xl p-4 sm:p-5 shadow-xs">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-emerald-600" />
+                    <span>Pusat Aksi Cepat Pengadaan (Quick Actions)</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Pilih aksi yang ingin Anda lakukan secara langsung tanpa navigasi rumit:
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNewPoForm({
+                        supplierName: "",
+                        supplierPhone: "",
+                        supplierWhatsapp: "",
+                        supplierAddress: "",
+                        expectedDeliveryDate: "",
+                        notes: "",
+                        paymentTerms: "TEMPO_30",
+                        paymentStatus: "UNPAID",
+                        paidAmount: 0,
+                        taxRate: initialData.taxSetting?.rate || 12,
+                        taxCategory: "STANDAR_12",
+                        taxLegalBasis: initialData.taxSetting?.legalBasis || "UU No. 7 Tahun 2021 (UU HPP) Pasal 7 (1b)",
+                        items: [
+                          {
+                            id: "item-1",
+                            productId: initialData?.gudangIntegration?.products?.[0]?.id || "",
+                            productName: initialData?.gudangIntegration?.products?.[0]?.name || "",
+                            quantity: 10,
+                            unit: initialData?.gudangIntegration?.products?.[0]?.unit || "unit",
+                            unitPrice: 100000,
+                          },
+                        ],
+                      });
+                      setSupplierMatch(null);
+                      setSupplierSuggestions([]);
+                      setShowCreatePoModal(true);
+                    }}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-sm cursor-pointer active:scale-95"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>+ Buat Pesanan (PO)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab("vendors");
+                      setVendorSubTab("priceManager");
+                    }}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-sm cursor-pointer active:scale-95"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                    <span>🏷️ Ubah Harga Vendor</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowVendorModal(true)}
+                    className="bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                  >
+                    <Building2 className="w-4 h-4 text-slate-500" />
+                    <span>+ Daftarkan Vendor Baru</span>
+                  </button>
+                </div>
+              </div>
+            </div>
             {/* Peringatan Barang Menipis dari Gudang */}
             {initialData.gudangIntegration.lowStockItems.length > 0 && (
               <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-5 space-y-3">
@@ -2169,24 +2230,148 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
           </div>
         )}
 
-        {/* TAB 2: PURCHASE ORDERS (PO) TABLE */}
-        {activeTab === "orders" && (
+        {/* TAB 2: PURCHASE ORDERS (PO) & PERMINTAAN GUDANG */}
+        {(activeTab === "orders" || activeTab === "requisitions") && (
           <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-5 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
               <div>
-                <h3 className="font-bold text-base text-slate-900">Daftar Purchase Orders (PO)</h3>
-                <p className="text-xs text-slate-500">Kelola seluruh pesanan pembelian resmi kepada vendor dan lacak kedatangan barang di gudang</p>
+                <h3 className="font-bold text-base text-slate-900">Daftar Purchase Orders (PO) &amp; Permintaan Gudang</h3>
+                <p className="text-xs text-slate-500">Kelola pesanan pembelian vendor, pantau status kedatangan di gudang, dan proses permintaan restock (PR)</p>
               </div>
               <button
                 type="button"
                 onClick={() => setShowCreatePoModal(true)}
-                className="bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
+                className="bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
               >
                 <Plus className="w-4 h-4" />
-                <span>Terbitkan PO Baru</span>
+                <span>+ Terbitkan PO Baru</span>
               </button>
             </div>
 
+            {/* Sub-Filter Segments yang Sangat Mudah */}
+            <div className="flex flex-wrap items-center gap-1.5 p-1 bg-slate-100/80 rounded-xl">
+              <button
+                type="button"
+                onClick={() => setOrderSubTab("ALL")}
+                className={`text-xs px-3.5 py-1.5 rounded-lg font-bold transition cursor-pointer ${
+                  orderSubTab === "ALL" && activeTab !== "requisitions"
+                    ? "bg-white text-slate-900 shadow-xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                Semua Pesanan ({initialData.stats.totalPOs})
+              </button>
+              <button
+                type="button"
+                onClick={() => setOrderSubTab("WAITING")}
+                className={`text-xs px-3.5 py-1.5 rounded-lg font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                  orderSubTab === "WAITING"
+                    ? "bg-amber-500 text-white shadow-xs"
+                    : "text-amber-800 bg-amber-50 hover:bg-amber-100/70"
+                }`}
+              >
+                <Clock className="w-3.5 h-3.5" />
+                <span>Menunggu Gudang ({initialData.stats.totalPOs - initialData.stats.receivedCount})</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setOrderSubTab("RECEIVED")}
+                className={`text-xs px-3.5 py-1.5 rounded-lg font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                  orderSubTab === "RECEIVED"
+                    ? "bg-emerald-600 text-white shadow-xs"
+                    : "text-emerald-800 bg-emerald-50 hover:bg-emerald-100/70"
+                }`}
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>Diterima Gudang ({initialData.stats.receivedCount})</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setOrderSubTab("UNPAID")}
+                className={`text-xs px-3.5 py-1.5 rounded-lg font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                  orderSubTab === "UNPAID"
+                    ? "bg-rose-600 text-white shadow-xs"
+                    : "text-rose-800 bg-rose-50 hover:bg-rose-100/70"
+                }`}
+              >
+                <Wallet className="w-3.5 h-3.5" />
+                <span>Belum Lunas ({initialData.stats.unpaidCount})</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setOrderSubTab("PR")}
+                className={`text-xs px-3.5 py-1.5 rounded-lg font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                  orderSubTab === "PR" || activeTab === "requisitions"
+                    ? "bg-blue-600 text-white shadow-xs"
+                    : "text-blue-800 bg-blue-50 hover:bg-blue-100/70"
+                }`}
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>Permintaan Gudang (PR: {initialData.gudangIntegration.requisitions?.length || 0})</span>
+                {initialData.stats.pendingPRsGudangCount > 0 && (
+                  <span className="bg-amber-400 text-slate-950 px-1.5 py-0.2 rounded text-[10px] font-black">
+                    {initialData.stats.pendingPRsGudangCount} Baru
+                  </span>
+                )}
+              </button>
+            </div>
+
+            {/* Jika sub-tab PR dipilih: Tampilkan Permintaan Gudang */}
+            {(orderSubTab === "PR" || activeTab === "requisitions") ? (
+              <div className="space-y-3 pt-2">
+                <div className="bg-blue-50/70 border border-blue-200 rounded-xl p-3 text-xs text-blue-900 flex items-center justify-between">
+                  <span>Permintaan barang dari sistem Gudang (PR) dapat langsung diproses menjadi PO resmi dalam 1 klik.</span>
+                  <span className="font-bold">{initialData.gudangIntegration.requisitions.length} Permintaan</span>
+                </div>
+                {initialData.gudangIntegration.requisitions.map((pr: any) => (
+                  <div key={pr.id} className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono font-bold text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded">
+                          {pr.prNumber}
+                        </span>
+                        <span className="text-[10px] font-bold bg-rose-100 text-rose-800 px-2 py-0.5 rounded-full">
+                          {pr.urgency}
+                        </span>
+                        <span className="text-[11px] text-slate-400">
+                          Diajukan oleh: <b>{pr.requestedBy}</b> • {formatDate(pr.createdAt)}
+                        </span>
+                      </div>
+
+                      <div className="mt-2 space-y-1">
+                        {pr.items.map((it: any, i: number) => (
+                          <div key={i} className="text-xs text-slate-700 flex items-center gap-2">
+                            <span className="font-bold">• {it.productName}</span>
+                            <span className="text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded text-[11px] font-semibold">
+                              Minta: +{it.requestedQty} {it.unit}
+                            </span>
+                            <span className="text-[10px] text-slate-400">
+                              (Sisa stok gudang: {it.currentStock} {it.unit})
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleConvertPRToPO(pr)}
+                      className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-4 py-2 rounded-xl shadow-sm transition flex items-center gap-1.5 cursor-pointer shrink-0 active:scale-95"
+                    >
+                      <ShoppingCart className="w-4 h-4" />
+                      <span>Proses Jadi Purchase Order (PO)</span>
+                    </button>
+                  </div>
+                ))}
+
+                {initialData.gudangIntegration.requisitions.length === 0 && (
+                  <div className="p-8 text-center text-slate-400 text-xs">
+                    Belum ada Permintaan Pengadaan (PR) dari staf gudang saat ini.
+                  </div>
+                )}
+              </div>
+            ) : (
+              <>
             {/* Filter & Toolbar Tab PO */}
             <div className="bg-slate-50/80 p-3 rounded-xl border border-slate-200/80 space-y-3">
               {/* Baris 1: Pencarian, Filter Vendor, Sort */}
@@ -2564,73 +2749,72 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                 </tbody>
               </table>
             </div>
+            </>
+            )}
           </div>
         )}
 
-        {/* TAB 3: PERMINTAAN DARI GUDANG (PR) */}
-        {activeTab === "requisitions" && (
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-5 space-y-4">
-            <div className="border-b border-slate-100 pb-3">
-              <h3 className="font-bold text-base text-slate-900">Permintaan Pengadaan Barang dari Gudang (PR)</h3>
-              <p className="text-xs text-slate-500">
-                Pengajuan barang restock otomatis yang diajukan oleh staf gudang saat stok fisik menipis
-              </p>
+        {/* TAB 3: VENDOR & HARGA BAHAN BAKU (UNIFIED HUB) */}
+        {(activeTab === "vendors" || activeTab === "priceComparison" || activeTab === "priceManager" || activeTab === "gudangCatalog") && (
+          <div className="space-y-4">
+            {/* Sub-Navigasi Bersih & Mudah Dipahami */}
+            <div className="bg-white p-1.5 rounded-2xl border border-slate-200/90 shadow-xs grid grid-cols-2 lg:grid-cols-4 gap-1.5 text-xs font-bold">
+              <button
+                type="button"
+                onClick={() => setVendorSubTab("catalog")}
+                className={`flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl transition cursor-pointer text-center ${
+                  vendorSubTab === "catalog"
+                    ? "bg-emerald-600 text-white shadow-xs"
+                    : "text-slate-600 hover:bg-slate-100"
+                }`}
+              >
+                <Scale className="w-4 h-4 shrink-0" />
+                <span className="truncate">🔍 Bandingkan Harga</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setVendorSubTab("priceManager")}
+                className={`flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl transition cursor-pointer text-center ${
+                  vendorSubTab === "priceManager"
+                    ? "bg-indigo-600 text-white shadow-xs"
+                    : "text-indigo-700 bg-indigo-50/70 hover:bg-indigo-100/80 border border-indigo-200/60"
+                }`}
+              >
+                <RotateCcw className="w-4 h-4 shrink-0" />
+                <span className="truncate">✏️ Form Update Harga</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setVendorSubTab("directory")}
+                className={`flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl transition cursor-pointer text-center ${
+                  vendorSubTab === "directory"
+                    ? "bg-emerald-600 text-white shadow-xs"
+                    : "text-slate-600 hover:bg-slate-100"
+                }`}
+              >
+                <Building2 className="w-4 h-4 shrink-0" />
+                <span className="truncate">🏢 Kontak Vendor ({initialData.stats.totalVendors})</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setVendorSubTab("gudangStock")}
+                className={`flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl transition cursor-pointer text-center ${
+                  vendorSubTab === "gudangStock"
+                    ? "bg-emerald-600 text-white shadow-xs"
+                    : "text-slate-600 hover:bg-slate-100"
+                }`}
+              >
+                <Package className="w-4 h-4 shrink-0" />
+                <span className="truncate">📦 Stok Fisik Gudang</span>
+              </button>
             </div>
 
-            <div className="space-y-3">
-              {initialData.gudangIntegration.requisitions.map((pr: any) => (
-                <div key={pr.id} className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono font-bold text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded">
-                        {pr.prNumber}
-                      </span>
-                      <span className="text-[10px] font-bold bg-rose-100 text-rose-800 px-2 py-0.5 rounded-full">
-                        {pr.urgency}
-                      </span>
-                      <span className="text-[11px] text-slate-400">
-                        Diajukan oleh: <b>{pr.requestedBy}</b> • {formatDate(pr.createdAt)}
-                      </span>
-                    </div>
-
-                    <div className="mt-2 space-y-1">
-                      {pr.items.map((it: any, i: number) => (
-                        <div key={i} className="text-xs text-slate-700 flex items-center gap-2">
-                          <span className="font-bold">• {it.productName}</span>
-                          <span className="text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded text-[11px] font-semibold">
-                            Minta: +{it.requestedQty} {it.unit}
-                          </span>
-                          <span className="text-[10px] text-slate-400">
-                            (Sisa stok gudang: {it.currentStock} {it.unit})
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => handleConvertPRToPO(pr)}
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-4 py-2 rounded-xl shadow-sm transition flex items-center gap-1.5 cursor-pointer shrink-0"
-                  >
-                    <ShoppingCart className="w-4 h-4" />
-                    <span>Proses Jadi Purchase Order (PO)</span>
-                  </button>
-                </div>
-              ))}
-
-              {initialData.gudangIntegration.requisitions.length === 0 && (
-                <div className="p-8 text-center text-slate-400 text-xs">
-                  Belum ada Permintaan Pengadaan (PR) dari staf gudang saat ini.
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* TAB 3.5: KATALOG HARGA BAHAN BAKU & KOMPARASI VENDOR */}
-        {activeTab === "priceComparison" && (
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-5 space-y-5">
+            {/* Sub-View 1: Bandingkan Harga Bahan Baku */}
+            {vendorSubTab === "catalog" && (
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-5 space-y-5">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
               <div>
                 <div className="flex items-center gap-2">
@@ -3022,8 +3206,8 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
           </div>
         )}
 
-        {/* TAB KHUSUS: KELOLA & UPDATE HARGA VENDOR */}
-        {activeTab === "priceManager" && (
+        {/* Sub-View 2: Formulir Update Harga Vendor */}
+        {vendorSubTab === "priceManager" && (
           <div className="space-y-6">
             {/* Header Card */}
             <div className="bg-gradient-to-r from-indigo-900 via-slate-900 to-indigo-950 text-white rounded-2xl p-6 shadow-sm border border-indigo-800/40">
@@ -3057,7 +3241,7 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                   </button>
                   <button
                     type="button"
-                    onClick={() => setActiveTab("priceComparison")}
+                    onClick={() => setVendorSubTab("catalog")}
                     className="bg-white/10 hover:bg-white/15 text-indigo-200 px-3.5 py-2 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer border border-white/10"
                   >
                     <Scale className="w-4 h-4" />
@@ -3555,7 +3739,131 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
           </div>
         )}
 
-        {/* TAB KHUSUS: RIWAYAT AKTIVITAS & AUDIT LOG PENGADAAN */}
+        {/* Sub-View 3: Direktori Vendor & Rekanan Supplier */}
+        {vendorSubTab === "directory" && (
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-5 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="font-bold text-base text-slate-900">Direktori Vendor &amp; Rekanan Supplier</h3>
+                <p className="text-xs text-slate-500">Daftar pemasok resmi, kontak WhatsApp dan alamat pengiriman</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowVendorModal(true)}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
+              >
+                <Plus className="w-4 h-4" />
+                <span>+ Daftarkan Vendor Baru</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {initialData.vendors.map((v: any) => (
+                <div key={v.id} className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 space-y-2.5">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <h4 className="font-bold text-sm text-slate-900">{v.name}</h4>
+                      <span className="text-[10px] bg-indigo-50 text-indigo-700 font-semibold px-2 py-0.5 rounded">
+                        {v.category || "General"}
+                      </span>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-slate-500 flex items-start gap-1.5">
+                    <MapPin className="w-3.5 h-3.5 text-rose-500 shrink-0 mt-0.5" />
+                    <span className="line-clamp-2">{v.address || "Alamat belum diatur"}</span>
+                  </p>
+
+                  <div className="flex items-center gap-2 pt-2 border-t border-slate-200 text-xs">
+                    {v.whatsapp && (
+                      <a
+                        href={`https://wa.me/${v.whatsapp.replace(/[^0-9]/g, "")}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 px-2.5 py-1 rounded-lg font-semibold"
+                      >
+                        <MessageCircle className="w-3.5 h-3.5" />
+                        <span>Chat WA ({v.whatsapp})</span>
+                      </a>
+                    )}
+                    {v.phone && (
+                      <a
+                        href={`tel:${v.phone}`}
+                        className="inline-flex items-center gap-1 bg-slate-100 text-slate-700 hover:bg-slate-200 px-2.5 py-1 rounded-lg"
+                      >
+                        <Phone className="w-3.5 h-3.5" />
+                        <span>{v.phone}</span>
+                      </a>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Sub-View 4: Katalog Stok Fisik Gudang (Sync) */}
+        {vendorSubTab === "gudangStock" && (
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-5 space-y-4">
+            <div className="border-b border-slate-100 pb-3">
+              <h3 className="font-bold text-base text-slate-900">Katalog Stok Fisik Gudang (Sinkron Real-time)</h3>
+              <p className="text-xs text-slate-500">
+                Data master barang dan ketersediaan stok fisik yang ditarik langsung dari sistem Gudang
+              </p>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 text-slate-600 font-semibold uppercase tracking-wider text-[10px]">
+                  <tr>
+                    <th className="p-3">Nama Produk &amp; Barcode</th>
+                    <th className="p-3">Kategori</th>
+                    <th className="p-3 text-right">Stok Fisik Gudang</th>
+                    <th className="p-3">Pemasok / Vendor Terdaftar</th>
+                    <th className="p-3 text-center">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {initialData.gudangIntegration.products.map((p: any) => (
+                    <tr key={p.id} className="hover:bg-slate-50/70 transition">
+                      <td className="p-3">
+                        <span className="font-bold text-slate-900 block">{p.name}</span>
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          {p.barcode ? `Barcode: ${p.barcode}` : "Tanpa Barcode"}
+                        </span>
+                      </td>
+                      <td className="p-3">{p.category}</td>
+                      <td className="p-3 text-right font-black">
+                        <span className={p.isLowStock ? "text-rose-600 font-bold" : "text-slate-900"}>
+                          {p.totalStock} {p.unit}
+                        </span>
+                        <span className="text-[10px] text-slate-400 block font-normal">
+                          Min: {p.minStock} {p.unit}
+                        </span>
+                      </td>
+                      <td className="p-3 text-slate-700">
+                        {p.supplier?.name || "-"}
+                      </td>
+                      <td className="p-3 text-center">
+                        <span
+                          className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            p.isLowStock ? "bg-rose-100 text-rose-800" : "bg-emerald-100 text-emerald-800"
+                          }`}
+                        >
+                          {p.isLowStock ? "Stok Kritis" : "Aman"}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    )}
+
+        {/* TAB 4: RIWAYAT AKTIVITAS & AUDIT LOG LENGKAP */}
         {activeTab === "history" && (
           <div className="space-y-6">
             {/* Header Card */}
@@ -3846,7 +4154,8 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                                 if (log.referenceId) {
                                   setManagerSelectedVendor(log.referenceId);
                                 }
-                                setActiveTab("priceManager");
+                                setActiveTab("vendors");
+                                setVendorSubTab("priceManager");
                               }}
                               className="text-[11px] text-indigo-700 hover:text-indigo-900 font-bold hover:underline flex items-center gap-1 cursor-pointer"
                             >
@@ -3878,128 +4187,6 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                   );
                 })
               )}
-            </div>
-          </div>
-        )}
-
-        {/* TAB 4: DIREKTORI VENDOR / SUPPLIER */}
-        {activeTab === "vendors" && (
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-5 space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div>
-                <h3 className="font-bold text-base text-slate-900">Direktori Vendor & Rekanan Supplier</h3>
-                <p className="text-xs text-slate-500">Daftar pemasok resmi, kontak WhatsApp dan alamat pengiriman</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowVendorModal(true)}
-                className="bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                <span>+ Daftarkan Vendor Baru</span>
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {initialData.vendors.map((v: any) => (
-                <div key={v.id} className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 space-y-2.5">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <h4 className="font-bold text-sm text-slate-900">{v.name}</h4>
-                      <span className="text-[10px] bg-indigo-50 text-indigo-700 font-semibold px-2 py-0.5 rounded">
-                        {v.category || "General"}
-                      </span>
-                    </div>
-                  </div>
-
-                  <p className="text-xs text-slate-500 flex items-start gap-1.5">
-                    <MapPin className="w-3.5 h-3.5 text-rose-500 shrink-0 mt-0.5" />
-                    <span className="line-clamp-2">{v.address || "Alamat belum diatur"}</span>
-                  </p>
-
-                  <div className="flex items-center gap-2 pt-2 border-t border-slate-200 text-xs">
-                    {v.whatsapp && (
-                      <a
-                        href={`https://wa.me/${v.whatsapp.replace(/[^0-9]/g, "")}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 px-2.5 py-1 rounded-lg font-semibold"
-                      >
-                        <MessageCircle className="w-3.5 h-3.5" />
-                        <span>Chat WA ({v.whatsapp})</span>
-                      </a>
-                    )}
-                    {v.phone && (
-                      <a
-                        href={`tel:${v.phone}`}
-                        className="inline-flex items-center gap-1 bg-slate-100 text-slate-700 hover:bg-slate-200 px-2.5 py-1 rounded-lg"
-                      >
-                        <Phone className="w-3.5 h-3.5" />
-                        <span>{v.phone}</span>
-                      </a>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* TAB 5: KATALOG PRODUK GUDANG (SYNC) */}
-        {activeTab === "gudangCatalog" && (
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-5 space-y-4">
-            <div className="border-b border-slate-100 pb-3">
-              <h3 className="font-bold text-base text-slate-900">Katalog Stok Fisik Gudang (Sinkron Real-time)</h3>
-              <p className="text-xs text-slate-500">
-                Data master barang dan ketersediaan stok fisik yang ditarik langsung dari sistem Gudang
-              </p>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-slate-600 font-semibold uppercase tracking-wider text-[10px]">
-                  <tr>
-                    <th className="p-3">Nama Produk & Barcode</th>
-                    <th className="p-3">Kategori</th>
-                    <th className="p-3 text-right">Stok Fisik Gudang</th>
-                    <th className="p-3">Pemasok / Vendor Terdaftar</th>
-                    <th className="p-3 text-center">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {initialData.gudangIntegration.products.map((p: any) => (
-                    <tr key={p.id} className="hover:bg-slate-50/70 transition">
-                      <td className="p-3">
-                        <span className="font-bold text-slate-900 block">{p.name}</span>
-                        <span className="text-[10px] text-slate-400 font-mono">
-                          {p.barcode ? `Barcode: ${p.barcode}` : "Tanpa Barcode"}
-                        </span>
-                      </td>
-                      <td className="p-3">{p.category}</td>
-                      <td className="p-3 text-right font-black">
-                        <span className={p.isLowStock ? "text-rose-600 font-bold" : "text-slate-900"}>
-                          {p.totalStock} {p.unit}
-                        </span>
-                        <span className="text-[10px] text-slate-400 block font-normal">
-                          Min: {p.minStock} {p.unit}
-                        </span>
-                      </td>
-                      <td className="p-3 text-slate-700">
-                        {p.supplier?.name || "-"}
-                      </td>
-                      <td className="p-3 text-center">
-                        <span
-                          className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                            p.isLowStock ? "bg-rose-100 text-rose-800" : "bg-emerald-100 text-emerald-800"
-                          }`}
-                        >
-                          {p.isLowStock ? "Stok Kritis" : "Aman"}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
             </div>
           </div>
         )}
