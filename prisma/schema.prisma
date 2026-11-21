@@ -1,0 +1,105 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// 1. Akun Pengguna / Staf Purchasing (Login ID Card)
+model PurchasingStaff {
+  id        String   @id @default(cuid())
+  idCard    String   @unique // Nomor ID Card Purchasing (misal: PUR-001)
+  name      String
+  position  String   @default("Staf Pengadaan")
+  role      String   @default("STAFF") // ADMIN, MANAGER, BUYER, STAFF
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// 2. Master Vendor / Rekanan Supplier
+model Vendor {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  phone     String?
+  whatsapp  String?
+  address   String?
+  category  String?  @default("Material & Logistik")
+  rating    Int      @default(5)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// 3. Purchase Order (PO) Purchasing
+model PurchaseOrder {
+  id                   String    @id @default(cuid())
+  poNumber             String    @unique // Contoh: PO-2026-001
+  supplierName         String
+  supplierPhone        String?
+  supplierAddress      String?
+  status               String    @default("APPROVED") // DRAFT, APPROVED, RECEIVED, CANCELLED
+  itemsJson            String    // JSON: [{ productId, productName, quantity, unit, unitPrice, subtotal }]
+  subtotal             Float     @default(0)
+  taxRate              Float     @default(11) // Persentase PPN saat PO dibuat (misal: 11 atau 12)
+  tax                  Float     @default(0)
+  totalAmount          Float     @default(0)
+  taxLegalBasis        String?   // Dasar hukum pajak saat diterbitkan, misal: UU HPP No. 7 Tahun 2021
+  notes                String?
+  expectedDeliveryDate DateTime?
+  createdBy            String    @default("Tim Purchasing")
+  receivedAt           DateTime?
+  receivedBy           String?
+  receivedWarehouse    String?
+  receiptNotes         String?
+  receiptPhotoUrl      String?
+  receiptTimestamp     String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+}
+
+// 4. Notifikasi Penerimaan & Kedatangan Barang dari Gudang
+model DeliveryNotification {
+  id            String   @id @default(cuid())
+  poNumber      String
+  supplierName  String?
+  warehouseName String
+  receivedBy    String
+  receivedAt    DateTime @default(now())
+  notes         String?
+  photoUrl      String?
+  timestamp     String?
+  read          Boolean  @default(false)
+  createdAt     DateTime @default(now())
+}
+
+// 4. Riwayat Permintaan Pengadaan dari Gudang (PR Tracking)
+model PurchaseRequisitionTrack {
+  id          String   @id @default(cuid())
+  prNumber    String   @unique
+  status      String   @default("IN_REVIEW") // IN_REVIEW, PO_CREATED, COMPLETED
+  requestedBy String
+  urgency     String   @default("NORMAL")
+  itemsJson   String
+  poNumber    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// 5. Konfigurasi Pajak & Sinkronisasi Regulasi DJP / Kemenkeu RI
+model TaxSetting {
+  id            String   @id @default(cuid())
+  taxName       String   @default("PPN (Pajak Pertambahan Nilai)")
+  rate          Float    @default(12) // Tarif standar nasional (12% per UU HPP & PMK 131/2024)
+  effectiveRate Float    @default(11) // Tarif efektif PMK 131/2024 (DPP Nilai Lain 11/12)
+  legalBasis    String   @default("UU No. 7 Tahun 2021 (UU HPP) & PMK No. 131 Tahun 2024")
+  authority     String   @default("Direktorat Jenderal Pajak (DJP) - Kementerian Keuangan RI")
+  sourceUrl     String   @default("https://pajak.go.id")
+  isAutoSync    Boolean  @default(true)
+  lastSyncedAt  DateTime @default(now())
+  syncStatus    String   @default("ONLINE_SYNCED")
+  notes         String?  @default("Tarif PPN resmi Republik Indonesia. Penyesuaian tarif otomatis sinkron dengan UU HPP & regulasi Kemenkeu.")
+  historyJson   String?  // JSON riwayat tarif perpajakan Indonesia
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
