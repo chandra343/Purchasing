@@ -139,3 +139,16 @@ model VendorPriceItem {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 }
+
+// 7. Riwayat Aktivitas & Audit Log Lengkap (Purchasing Activity History)
+model ActivityLog {
+  id           String   @id @default(cuid())
+  type         String   // PRICE_UPDATE, PO_CREATED, PAYMENT_RECORDED, WAREHOUSE_RECEIVED, VENDOR_REGISTERED, TAX_SYNC
+  title        String   // Judul Singkat Aktivitas
+  description  String   // Rincian Detail Aksi yang Dilakukan
+  actor        String   @default("Tim Purchasing") // Nama staf pelaku aksi
+  actorRole    String?  @default("Staf Pengadaan") // Jabatan / peran staf
+  referenceId  String?  // No PO, Nama Vendor, atau Nama Bahan Baku terkait
+  metadataJson String?  // Data JSON pendukung (harga lama, harga baru, persentase, nominal, metode, dll)
+  createdAt    DateTime @default(now())
+}

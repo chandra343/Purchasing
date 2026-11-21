@@ -74,6 +74,7 @@ export async function getPurchasingDashboardData() {
     gudangPRs,
     gudangOrders,
     vendorPrices,
+    activityLogs,
   ] = await Promise.all([
     prisma.purchasingStaff.findMany({ orderBy: { idCard: "asc" } }),
     prisma.vendor.findMany({ orderBy: { name: "asc" } }),
@@ -86,7 +87,78 @@ export async function getPurchasingDashboardData() {
     getGudangRequisitions(),
     getGudangOrders(),
     prisma.vendorPriceItem.findMany({ orderBy: [{ productName: "asc" }, { unitPrice: "asc" }] }),
+    prisma.activityLog.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
   ]);
+
+  // Seed default Riwayat Aktivitas jika belum ada
+  let activeLogs = activityLogs;
+  if (activeLogs.length === 0) {
+    const defaultLogs = [
+      {
+        type: "PRICE_UPDATE",
+        title: "Pembaruan Harga Bahan Baku",
+        description: "PT Chandra Asri Petrochemical Tbk memperbarui harga Biji Plastik HDPE Virgin Granule menjadi Rp 26.500.000 / ton (Pricelist Resmi Kuartal IV).",
+        actor: "Rian Pratama",
+        actorRole: "Manajer Pengadaan",
+        referenceId: "PT Chandra Asri Petrochemical Tbk",
+        createdAt: new Date(Date.now() - 3600000 * 5),
+      },
+      {
+        type: "PO_CREATED",
+        title: "Penerbitan PO-2026-003",
+        description: "Penerbitan PO resmi ke PT Chandra Asri Petrochemical Tbk senilai Rp 277.500.000 untuk pengadaan 10 Ton Biji Plastik HDPE (Termin: Tempo 30 Hari).",
+        actor: "Rian Pratama",
+        actorRole: "Manajer Pengadaan",
+        referenceId: "PO-2026-003",
+        createdAt: new Date(Date.now() - 3600000 * 4),
+      },
+      {
+        type: "WAREHOUSE_RECEIVED",
+        title: "Kedatangan Barang di Gudang",
+        description: "Barang PO-2026-003 telah sampai dan diterima lengkap di Gudang Utama oleh Staf Gudang.",
+        actor: "Budi Santoso",
+        actorRole: "Kepala Gudang",
+        referenceId: "PO-2026-003",
+        createdAt: new Date(Date.now() - 3600000 * 3),
+      },
+      {
+        type: "PAYMENT_RECORDED",
+        title: "Pelunasan Pembayaran Kasir",
+        description: "Kasir mencatat pembayaran lunas senilai Rp 277.500.000 untuk PO-2026-003 via Transfer Bank BCA operasional.",
+        actor: "Maya Indah Sari",
+        actorRole: "Kasir Purchasing",
+        referenceId: "PO-2026-003",
+        createdAt: new Date(Date.now() - 3600000 * 2),
+      },
+      {
+        type: "PRICE_UPDATE",
+        title: "Sinkronisasi Harga Kabel Tembaga",
+        description: "Toko Kabel Jaya Makmur Glodok menyinkronkan harga penawaran Kabel Tembaga NYY 4x16mm menjadi Rp 110.000 / meter (SNI Standar PLN).",
+        actor: "Maya Indah Sari",
+        actorRole: "Staf Pengadaan",
+        referenceId: "Toko Kabel Jaya Makmur Glodok",
+        createdAt: new Date(Date.now() - 3600000 * 1.5),
+      },
+      {
+        type: "TAX_SYNC",
+        title: "Sinkronisasi Regulasi Pajak DJP",
+        description: "Regulasi PPN 12% disinkronkan otomatis sesuai UU No. 7 Tahun 2021 & PMK No. 131 Tahun 2024 dari portal pajak.go.id.",
+        actor: "Sistem Otomatis",
+        actorRole: "Integrasi Pajak DJP",
+        referenceId: "UU HPP",
+        createdAt: new Date(Date.now() - 3600000 * 1),
+      },
+    ];
+
+    for (const log of defaultLogs) {
+      await prisma.activityLog.create({ data: log });
+    }
+
+    activeLogs = await prisma.activityLog.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 100,
+    });
+  }
 
   // Seed default Katalog Harga Bahan Baku Vendor jika belum ada data
   let activeVendorPrices = vendorPrices;
@@ -309,6 +381,7 @@ export async function getPurchasingDashboardData() {
     deliveryNotifications,
     taxSetting,
     vendorPrices: activeVendorPrices,
+    activityLogs: activeLogs,
     purchaseOrders: purchaseOrders.map((po) => ({
       ...po,
       items: JSON.parse(po.itemsJson || "[]"),
@@ -333,8 +406,36 @@ export async function getPurchasingDashboardData() {
       lowStockGudangCount: gudangLowStock.length,
       pendingPRsGudangCount: gudangPRs.filter((pr: any) => pr.status === "SUBMITTED").length,
       unreadDeliveriesCount: deliveryNotifications.filter((n) => !n.read).length,
+      totalActivities: activeLogs.length,
     },
   };
+}
+
+// Helper Pencatatan Audit Log & Riwayat Aktivitas Sistem Purchasing
+export async function logActivity(data: {
+  type: string;
+  title: string;
+  description: string;
+  actor?: string;
+  actorRole?: string;
+  referenceId?: string;
+  metadata?: any;
+}) {
+  try {
+    await prisma.activityLog.create({
+      data: {
+        type: data.type,
+        title: data.title,
+        description: data.description,
+        actor: data.actor || "Tim Purchasing",
+        actorRole: data.actorRole || "Staf Pengadaan",
+        referenceId: data.referenceId || null,
+        metadataJson: data.metadata ? JSON.stringify(data.metadata) : null,
+      },
+    });
+  } catch (e) {
+    console.error("Gagal mencatat audit log aktivitas:", e);
+  }
 }
 
 // Tandai notifikasi kedatangan barang telah dibaca
@@ -548,6 +649,24 @@ export async function createPurchaseOrder(data: {
     console.warn("Gudang sync notification delayed:", e);
   }
 
+  // 3. Catat audit log aktivitas
+  await logActivity({
+    type: "PO_CREATED",
+    title: `Penerbitan PO ${po.poNumber}`,
+    description: `PO ${po.poNumber} berhasil diterbitkan kepada "${po.supplierName}" senilai Rp ${totalAmount.toLocaleString("id-ID")} (${itemsWithSubtotal.length} jenis barang). Termin: ${paymentTerms}. Status Bayar: ${paymentStatus}.`,
+    actor: data.createdBy || "Tim Purchasing",
+    actorRole: "Staf Pengadaan",
+    referenceId: po.poNumber,
+    metadata: {
+      poNumber: po.poNumber,
+      supplierName: po.supplierName,
+      totalAmount,
+      paymentStatus,
+      paymentTerms,
+      itemsCount: itemsWithSubtotal.length,
+    },
+  });
+
   revalidatePath("/");
   return po;
 }
@@ -555,6 +674,17 @@ export async function createPurchaseOrder(data: {
 // 4. Sinkronisasi Langsung dari Portal Pajak Indonesia (pajak.go.id / Kemenkeu)
 export async function syncTaxFromPajakIndonesia() {
   const result = await syncOfficialIndonesianTax();
+  if (result.success && result.data) {
+    await logActivity({
+      type: "TAX_SYNC",
+      title: `Sinkronisasi Regulasi Pajak DJP (${result.data.rate}%)`,
+      description: `Regulasi tarif PPN ${result.data.rate}% berhasil disinkronkan langsung dari portal resmi DJP/Kemenkeu (${result.data.legalBasis}).`,
+      actor: "Sistem Otomatis",
+      actorRole: "Integrasi Pajak DJP",
+      referenceId: "DJP PPN",
+      metadata: { rate: result.data.rate, legalBasis: result.data.legalBasis },
+    });
+  }
   revalidatePath("/");
   return result;
 }
@@ -618,6 +748,16 @@ export async function createVendor(data: {
       address: data.address?.trim() || null,
       category: data.category?.trim() || "Material & Logistik",
     },
+  });
+
+  await logActivity({
+    type: "VENDOR_REGISTERED",
+    title: `Pendaftaran Vendor Baru: ${vendor.name}`,
+    description: `Vendor "${vendor.name}" (${vendor.category}) berhasil didaftarkan ke direktori pemasok Purchasing. Kontak: ${vendor.phone || vendor.whatsapp || "-"}.`,
+    actor: "Staf Pengadaan",
+    actorRole: "Administrasi Vendor",
+    referenceId: vendor.name,
+    metadata: { vendorId: vendor.id, vendorName: vendor.name, category: vendor.category },
   });
 
   revalidatePath("/");
@@ -685,6 +825,22 @@ export async function recordPoPayment(data: {
         paymentProofUrl: data.paymentProofUrl || po.paymentProofUrl || null,
         paymentRecordedBy: data.paymentRecordedBy || "Kasir Purchasing",
         paymentDate: finalStatus === "UNPAID" ? null : new Date(),
+      },
+    });
+
+    await logActivity({
+      type: "PAYMENT_RECORDED",
+      title: `Catatan Pembayaran PO ${po.poNumber} (${finalStatus})`,
+      description: `Kasir mencatat pembayaran senilai Rp ${finalPaidAmount.toLocaleString("id-ID")} untuk ${po.poNumber} (${po.supplierName}). Metode: ${data.paymentMethod || "TRANSFER_BANK"}. Status: ${finalStatus}. Catatan: ${data.paymentNotes || "-"}`,
+      actor: data.paymentRecordedBy || "Kasir Purchasing",
+      actorRole: "Kasir Finansial Purchasing",
+      referenceId: po.poNumber,
+      metadata: {
+        poNumber: po.poNumber,
+        paidAmount: finalPaidAmount,
+        totalAmount: po.totalAmount,
+        paymentStatus: finalStatus,
+        paymentMethod: data.paymentMethod || "TRANSFER_BANK",
       },
     });
 
@@ -805,6 +961,22 @@ export async function createOrUpdateVendorPrice(data: {
       }
     }
 
+    await logActivity({
+      type: "PRICE_UPDATE",
+      title: data.id ? `Pembaruan Harga: ${cleanProductName}` : `Pendaftaran Harga: ${cleanProductName}`,
+      description: `${data.updatedBy || "Staf Purchasing"} ${data.id ? "memperbarui" : "mendaftarkan"} penawaran ${cleanProductName} dari ${cleanVendorName} menjadi Rp ${Number(data.unitPrice).toLocaleString("id-ID")}/${data.unit || "kg"}. Alasan: ${data.priceChangeReason || "Penyesuaian penawaran katalog vendor"}.`,
+      actor: data.updatedBy || "Staf Purchasing",
+      actorRole: "Staf Pengadaan",
+      referenceId: cleanVendorName,
+      metadata: {
+        productName: cleanProductName,
+        vendorName: cleanVendorName,
+        unitPrice: Number(data.unitPrice),
+        unit: data.unit || "kg",
+        reason: data.priceChangeReason || null,
+      },
+    });
+
     revalidatePath("/");
     return { success: true, message: `Penawaran harga untuk "${cleanProductName}" dari "${cleanVendorName}" berhasil disimpan & disinkronkan!` };
   } catch (e: any) {
@@ -872,6 +1044,25 @@ export async function syncVendorPriceChange(data: {
 
     revalidatePath("/");
     const statusNote = diff > 0 ? `naik +${percentDiff}%` : diff < 0 ? `turun ${percentDiff}% (hemat)` : `stabil`;
+
+    await logActivity({
+      type: "PRICE_UPDATE",
+      title: `Sinkronisasi Harga: ${existing.productName}`,
+      description: `${data.updatedBy || "Staf Purchasing"} memperbarui harga "${existing.productName}" dari vendor "${existing.vendorName}" dari Rp ${oldPrice.toLocaleString("id-ID")} menjadi Rp ${newPrice.toLocaleString("id-ID")} / ${existing.unit} (${statusNote}). Alasan: ${data.reason || "Pembaruan harga vendor"}.`,
+      actor: data.updatedBy || "Staf Purchasing",
+      actorRole: "Staf Pengadaan",
+      referenceId: existing.vendorName,
+      metadata: {
+        productName: existing.productName,
+        vendorName: existing.vendorName,
+        oldPrice,
+        newPrice,
+        diff,
+        percentDiff,
+        reason: data.reason,
+      },
+    });
+
     return {
       success: true,
       message: `✓ Harga "${existing.productName}" dari "${existing.vendorName}" berhasil disinkronkan (${statusNote}) menjadi Rp ${newPrice.toLocaleString("id-ID")}/${existing.unit}!`,

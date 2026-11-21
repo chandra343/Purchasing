@@ -95,7 +95,9 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
   }
 
   // Active Navigation Tab
-  const [activeTab, setActiveTab] = useState<"dashboard" | "orders" | "requisitions" | "priceComparison" | "vendors" | "gudangCatalog">("dashboard");
+  const [activeTab, setActiveTab] = useState<
+    "dashboard" | "orders" | "requisitions" | "priceComparison" | "priceManager" | "history" | "vendors" | "gudangCatalog"
+  >("dashboard");
 
   // State Komparasi Harga Bahan Baku & Penawaran Vendor
   const [priceSearchQuery, setPriceSearchQuery] = useState<string>("");
@@ -118,6 +120,20 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
     grade: "",
     notes: "",
   });
+
+  // Fitur Khusus: Kelola & Pembaruan Harga Vendor (Price Manager)
+  const [managerSelectedVendor, setManagerSelectedVendor] = useState<string>("");
+  const [managerSelectedPriceId, setManagerSelectedPriceId] = useState<string>("");
+  const [managerNewPrice, setManagerNewPrice] = useState<number>(0);
+  const [managerReason, setManagerReason] = useState<string>("Pricelist Resmi Kuartal Baru Vendor");
+  const [managerNotes, setManagerNotes] = useState<string>("");
+  const [isSavingManagerPrice, setIsSavingManagerPrice] = useState<boolean>(false);
+  const [managerSearchQuery, setManagerSearchQuery] = useState<string>("");
+  const [managerCategoryFilter, setManagerCategoryFilter] = useState<string>("ALL");
+
+  // Fitur Khusus: Riwayat Aktivitas & Audit Log Pengadaan (Activity Log)
+  const [historyTypeFilter, setHistoryTypeFilter] = useState<string>("ALL");
+  const [historySearchQuery, setHistorySearchQuery] = useState<string>("");
 
   // Modal Ubah & Sinkronisasi Harga Vendor
   const [editSyncPriceItem, setEditSyncPriceItem] = useState<any | null>(null);
@@ -514,6 +530,152 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
       };
     });
   }, [filteredVendorPrices]);
+
+  // Memo & Helper Khusus Fitur Kelola & Pembaruan Harga Vendor
+  const vendorsWithPrices = useMemo(() => {
+    const list: string[] = [];
+    (initialData.vendorPrices || []).forEach((p: any) => {
+      if (p.vendorName && !list.includes(p.vendorName)) {
+        list.push(p.vendorName);
+      }
+    });
+    (initialData.vendors || []).forEach((v: any) => {
+      if (v.name && !list.includes(v.name)) {
+        list.push(v.name);
+      }
+    });
+    return list;
+  }, [initialData.vendorPrices, initialData.vendors]);
+
+  const vendorProductsForManager = useMemo(() => {
+    if (!managerSelectedVendor) return initialData.vendorPrices || [];
+    return (initialData.vendorPrices || []).filter(
+      (p: any) => p.vendorName === managerSelectedVendor
+    );
+  }, [initialData.vendorPrices, managerSelectedVendor]);
+
+  const currentManagerItem = useMemo(() => {
+    return (initialData.vendorPrices || []).find((p: any) => p.id === managerSelectedPriceId) || null;
+  }, [initialData.vendorPrices, managerSelectedPriceId]);
+
+  // Efek inisialisasi default selection di Tab Price Manager
+  useEffect(() => {
+    if (!managerSelectedPriceId && initialData.vendorPrices && initialData.vendorPrices.length > 0) {
+      const first = initialData.vendorPrices[0];
+      setManagerSelectedVendor(first.vendorName);
+      setManagerSelectedPriceId(first.id);
+      setManagerNewPrice(first.unitPrice);
+    }
+  }, [initialData.vendorPrices, managerSelectedPriceId]);
+
+  // Master List untuk Tabel Kelola Harga Vendor
+  const managerTablePrices = useMemo(() => {
+    let list: any[] = [...(initialData.vendorPrices || [])];
+    if (managerSearchQuery.trim()) {
+      const q = managerSearchQuery.toLowerCase().trim();
+      list = list.filter(
+        (it) =>
+          it.productName?.toLowerCase().includes(q) ||
+          it.vendorName?.toLowerCase().includes(q) ||
+          it.category?.toLowerCase().includes(q) ||
+          it.grade?.toLowerCase().includes(q)
+      );
+    }
+    if (managerCategoryFilter !== "ALL") {
+      list = list.filter((it) => it.category === managerCategoryFilter);
+    }
+    return list;
+  }, [initialData.vendorPrices, managerSearchQuery, managerCategoryFilter]);
+
+  // Handler Khusus Price Manager
+  const handleManagerVendorChange = (vendorName: string) => {
+    setManagerSelectedVendor(vendorName);
+    const vendorItems = (initialData.vendorPrices || []).filter((p: any) => p.vendorName === vendorName);
+    if (vendorItems.length > 0) {
+      setManagerSelectedPriceId(vendorItems[0].id);
+      setManagerNewPrice(vendorItems[0].unitPrice);
+    } else {
+      setManagerSelectedPriceId("");
+      setManagerNewPrice(0);
+    }
+  };
+
+  const handleManagerItemChange = (priceId: string) => {
+    setManagerSelectedPriceId(priceId);
+    const item = (initialData.vendorPrices || []).find((p: any) => p.id === priceId);
+    if (item) {
+      setManagerNewPrice(item.unitPrice);
+      if (item.vendorName !== managerSelectedVendor) {
+        setManagerSelectedVendor(item.vendorName);
+      }
+    }
+  };
+
+  const handleSaveManagerPrice = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentManagerItem) {
+      showMessage("error", "Pilih bahan baku/item vendor yang ingin diubah harganya.");
+      return;
+    }
+    if (Number(managerNewPrice) <= 0) {
+      showMessage("error", "Nominal harga baru harus lebih besar dari 0.");
+      return;
+    }
+    setIsSavingManagerPrice(true);
+    try {
+      const fullReason = managerNotes.trim() ? `${managerReason} (${managerNotes.trim()})` : managerReason;
+      const res = await syncVendorPriceChange({
+        id: currentManagerItem.id,
+        newPrice: Number(managerNewPrice),
+        reason: fullReason,
+        updatedBy: currentStaff?.name || "Staf Purchasing",
+      });
+      if (res.success) {
+        showMessage("success", res.message || "Harga vendor berhasil disinkronkan!");
+        setManagerNotes("");
+        router.refresh();
+      } else {
+        showMessage("error", res.error || "Gagal menyinkronkan harga vendor.");
+      }
+    } catch (err: any) {
+      showMessage("error", err.message || "Terjadi kesalahan sistem.");
+    } finally {
+      setIsSavingManagerPrice(false);
+    }
+  };
+
+  // Memo & Helper Khusus Fitur Riwayat Aktivitas & Audit Log
+  const filteredActivityLogs = useMemo(() => {
+    let list: any[] = [...(initialData.activityLogs || [])];
+    if (historyTypeFilter !== "ALL") {
+      list = list.filter((l) => l.type === historyTypeFilter);
+    }
+    if (historySearchQuery.trim()) {
+      const q = historySearchQuery.toLowerCase().trim();
+      list = list.filter(
+        (l) =>
+          l.title?.toLowerCase().includes(q) ||
+          l.description?.toLowerCase().includes(q) ||
+          l.actor?.toLowerCase().includes(q) ||
+          l.actorRole?.toLowerCase().includes(q) ||
+          l.referenceId?.toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [initialData.activityLogs, historyTypeFilter, historySearchQuery]);
+
+  const activityCounts = useMemo(() => {
+    const logs = initialData.activityLogs || [];
+    return {
+      all: logs.length,
+      price: logs.filter((l: any) => l.type === "PRICE_UPDATE").length,
+      po: logs.filter((l: any) => l.type === "PO_CREATED").length,
+      payment: logs.filter((l: any) => l.type === "PAYMENT_RECORDED").length,
+      warehouse: logs.filter((l: any) => l.type === "WAREHOUSE_RECEIVED").length,
+      vendor: logs.filter((l: any) => l.type === "VENDOR_REGISTERED").length,
+      tax: logs.filter((l: any) => l.type === "TAX_SYNC").length,
+    };
+  }, [initialData.activityLogs]);
 
   // Handler 1-Klik Pilih Vendor & Bahan Baku untuk Buat PO
   const handleSelectVendorPriceForPO = (item: any) => {
@@ -1012,6 +1174,36 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
     const d = new Date(dateVal);
     if (isNaN(d.getTime())) return "-";
     return d.toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" });
+  };
+
+  const formatDateTime = (dateVal: any) => {
+    if (!dateVal) return "-";
+    const d = new Date(dateVal);
+    if (isNaN(d.getTime())) return "-";
+    return d.toLocaleString("id-ID", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
+  const formatRelativeTime = (dateVal: any) => {
+    if (!dateVal) return "-";
+    const d = new Date(dateVal);
+    if (isNaN(d.getTime())) return "-";
+    const diffMs = Date.now() - d.getTime();
+    const diffSec = Math.floor(diffMs / 1000);
+    const diffMin = Math.floor(diffSec / 60);
+    const diffHour = Math.floor(diffMin / 60);
+    const diffDay = Math.floor(diffHour / 24);
+
+    if (diffSec < 60) return "Baru saja";
+    if (diffMin < 60) return `${diffMin} menit yang lalu`;
+    if (diffHour < 24) return `${diffHour} jam yang lalu`;
+    if (diffDay < 7) return `${diffDay} hari yang lalu`;
+    return formatDate(dateVal);
   };
 
   // Layar Tunggu Pengecekan Sesi
@@ -1521,10 +1713,38 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
               activeTab === "priceComparison" ? "bg-emerald-50 text-emerald-800 font-bold" : "text-slate-600 hover:text-slate-900"
             }`}
           >
-            <Tag className="w-4 h-4 text-emerald-600" />
+            <Scale className="w-4 h-4 text-emerald-600" />
             <span>Katalog Harga Bahan Baku</span>
             <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-bold">
               {initialData.vendorPrices?.length || 0}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab("priceManager")}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
+              activeTab === "priceManager" ? "bg-indigo-50 text-indigo-800 font-bold" : "text-slate-600 hover:text-slate-900"
+            }`}
+          >
+            <RotateCcw className="w-4 h-4 text-indigo-600" />
+            <span>Update Harga Vendor</span>
+            <span className="text-[10px] bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded-full font-bold">
+              Fitur Ubah
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab("history")}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
+              activeTab === "history" ? "bg-blue-50 text-blue-800 font-bold" : "text-slate-600 hover:text-slate-900"
+            }`}
+          >
+            <History className="w-4 h-4 text-blue-600" />
+            <span>Riwayat Aktivitas</span>
+            <span className="text-[10px] bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full font-bold">
+              {initialData.activityLogs?.length || 0}
             </span>
           </button>
 
@@ -2797,6 +3017,866 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                     </div>
                   </div>
                 ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* TAB KHUSUS: KELOLA & UPDATE HARGA VENDOR */}
+        {activeTab === "priceManager" && (
+          <div className="space-y-6">
+            {/* Header Card */}
+            <div className="bg-gradient-to-r from-indigo-900 via-slate-900 to-indigo-950 text-white rounded-2xl p-6 shadow-sm border border-indigo-800/40">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="p-2 bg-indigo-500/20 text-indigo-300 rounded-xl border border-indigo-500/30">
+                      <RotateCcw className="w-5 h-5 text-indigo-400" />
+                    </span>
+                    <h2 className="text-xl font-bold tracking-tight text-white">
+                      Kelola &amp; Pembaruan Harga Vendor
+                    </h2>
+                    <span className="text-xs bg-indigo-500/30 text-indigo-200 border border-indigo-400/30 px-2.5 py-0.5 rounded-full font-semibold">
+                      Fitur Mandiri
+                    </span>
+                  </div>
+                  <p className="text-xs text-indigo-200/80 max-w-2xl leading-relaxed">
+                    Fitur khusus tersendiri untuk meninjau dan memperbarui harga penawaran dari vendor yang telah tersedia.
+                    Perubahan harga otomatis tersinkronisasi ke katalog komparasi belanja dan tercatat ke audit log aktivitas.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowAddPriceModal(true)}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>+ Tambah Penawaran Baru</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("priceComparison")}
+                    className="bg-white/10 hover:bg-white/15 text-indigo-200 px-3.5 py-2 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer border border-white/10"
+                  >
+                    <Scale className="w-4 h-4" />
+                    <span>Katalog Komparasi</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Stat Cards Row */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5 pt-4 border-t border-indigo-800/50 text-xs">
+                <div className="bg-white/5 rounded-xl p-3 border border-white/10">
+                  <span className="text-indigo-300 text-[11px] block">Total Penawaran Aktif</span>
+                  <span className="text-lg font-bold text-white mt-0.5 block">
+                    {initialData.vendorPrices?.length || 0} Item
+                  </span>
+                </div>
+                <div className="bg-white/5 rounded-xl p-3 border border-white/10">
+                  <span className="text-indigo-300 text-[11px] block">Vendor Terdaftar</span>
+                  <span className="text-lg font-bold text-white mt-0.5 block">
+                    {vendorsWithPrices.length} Vendor
+                  </span>
+                </div>
+                <div className="bg-white/5 rounded-xl p-3 border border-white/10">
+                  <span className="text-indigo-300 text-[11px] block">Penawaran Terbaik</span>
+                  <span className="text-lg font-bold text-emerald-400 mt-0.5 block">
+                    {(initialData.vendorPrices || []).filter((p: any) => p.isBestPrice).length} Item
+                  </span>
+                </div>
+                <div className="bg-white/5 rounded-xl p-3 border border-white/10">
+                  <span className="text-indigo-300 text-[11px] block">Kategori Bahan Baku</span>
+                  <span className="text-lg font-bold text-amber-300 mt-0.5 block">
+                    {uniquePriceCategories.length} Kategori
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Workplace: Formulir Mandiri Update Harga Vendor */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-6 space-y-6">
+              <div className="border-b border-slate-100 pb-4">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 bg-indigo-50 text-indigo-700 rounded-lg">
+                    <TrendingUp className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-base text-slate-900">
+                      Formulir Penyesuaian Harga Satuan Vendor
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Pilih vendor rekanan dan bahan baku yang ingin disesuaikan harganya, masukkan nominal baru, lalu sinkronkan.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <form onSubmit={handleSaveManagerPrice} className="space-y-6">
+                {/* Langkah 1 & 2: Pemilihan Vendor & Bahan Baku */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-slate-700 flex items-center justify-between">
+                      <span>1. Pilih Vendor / Pemasok:</span>
+                      <span className="text-[11px] text-slate-400 font-normal">
+                        ({vendorsWithPrices.length} vendor tersedia)
+                      </span>
+                    </label>
+                    <select
+                      value={managerSelectedVendor}
+                      onChange={(e) => handleManagerVendorChange(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-slate-800 font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none cursor-pointer"
+                    >
+                      <option value="">-- Pilih Vendor --</option>
+                      {vendorsWithPrices.map((v) => (
+                        <option key={v} value={v}>
+                          {v}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-slate-700 flex items-center justify-between">
+                      <span>2. Pilih Bahan Baku / Item dari Vendor:</span>
+                      <span className="text-[11px] text-slate-400 font-normal">
+                        ({vendorProductsForManager.length} item penawaran)
+                      </span>
+                    </label>
+                    <select
+                      value={managerSelectedPriceId}
+                      onChange={(e) => handleManagerItemChange(e.target.value)}
+                      disabled={vendorProductsForManager.length === 0}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-slate-800 font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none disabled:bg-slate-100 disabled:text-slate-400 cursor-pointer"
+                    >
+                      {vendorProductsForManager.length === 0 ? (
+                        <option value="">-- Tidak ada item penawaran untuk vendor ini --</option>
+                      ) : (
+                        vendorProductsForManager.map((p: any) => (
+                          <option key={p.id} value={p.id}>
+                            {p.productName} ({formatRupiah(p.unitPrice)} / {p.unit})
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Ringkasan Penawaran yang Dipilih Saat Ini */}
+                {currentManagerItem ? (
+                  <div className="bg-slate-50 rounded-2xl border border-slate-200/90 p-5 space-y-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200/60 pb-3">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-full">
+                            {currentManagerItem.category}
+                          </span>
+                          {currentManagerItem.isBestPrice && (
+                            <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full flex items-center gap-1">
+                              <Sparkles className="w-3 h-3 text-emerald-600" />
+                              <span>Harga Termurah Saat Ini</span>
+                            </span>
+                          )}
+                        </div>
+                        <h4 className="font-bold text-slate-900 text-sm mt-1">
+                          {currentManagerItem.productName}
+                        </h4>
+                        <p className="text-xs text-slate-500">
+                          Pemasok: <b>{currentManagerItem.vendorName}</b> {currentManagerItem.vendorPhone ? `(${currentManagerItem.vendorPhone})` : ""}
+                        </p>
+                      </div>
+
+                      <div className="sm:text-right">
+                        <span className="text-[11px] text-slate-500 block">Harga Satuan Berlaku Saat Ini:</span>
+                        <div className="text-lg font-black text-slate-900 mt-0.5">
+                          {formatRupiah(currentManagerItem.unitPrice)}
+                          <span className="text-xs font-normal text-slate-500 ml-1">/ {currentManagerItem.unit}</span>
+                        </div>
+                        {currentManagerItem.previousPrice && (
+                          <span className="text-[11px] text-slate-400 block line-through">
+                            Sebelumnya: {formatRupiah(currentManagerItem.previousPrice)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                      <div>
+                        <span className="text-[11px] text-slate-500 block">Minimal Order (MOQ):</span>
+                        <span className="font-semibold text-slate-800">
+                          {currentManagerItem.minOrderQty || 1} {currentManagerItem.unit}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[11px] text-slate-500 block">Lead Time Pengiriman:</span>
+                        <span className="font-semibold text-slate-800">
+                          {currentManagerItem.leadTimeDays || 1} Hari Kerja
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[11px] text-slate-500 block">Termin Pembayaran:</span>
+                        <span className="font-semibold text-slate-800">
+                          {currentManagerItem.paymentTerms === "COD"
+                            ? "Cash on Delivery"
+                            : currentManagerItem.paymentTerms === "TEMPO_30"
+                            ? "Tempo 30 Hari"
+                            : currentManagerItem.paymentTerms === "TEMPO_60"
+                            ? "Tempo 60 Hari"
+                            : "Tunai / Cash"}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[11px] text-slate-500 block">Grade / Spesifikasi:</span>
+                        <span className="font-semibold text-slate-800 truncate block">
+                          {currentManagerItem.grade || "Standar Industri"}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Input Harga Baru & Kalkulator Selisih Interaktif */}
+                    <div className="bg-white rounded-xl border border-indigo-100 p-4 space-y-4 shadow-2xs">
+                      <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
+                        <div className="md:col-span-5 space-y-1.5">
+                          <label className="text-xs font-bold text-slate-900 block">
+                            Masukkan Harga Satuan Baru (Rp / {currentManagerItem.unit}):
+                          </label>
+                          <div className="relative">
+                            <span className="absolute left-3 top-2.5 text-xs font-bold text-slate-400">Rp</span>
+                            <input
+                              type="number"
+                              min="1"
+                              value={managerNewPrice || ""}
+                              onChange={(e) => setManagerNewPrice(Number(e.target.value))}
+                              placeholder="Contoh: 27500000"
+                              className="w-full pl-9 pr-3 py-2 bg-white border-2 border-indigo-200 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+
+                        {/* Kalkulator Selisih Real-Time */}
+                        <div className="md:col-span-7">
+                          {(() => {
+                            const oldP = currentManagerItem.unitPrice || 0;
+                            const newP = Number(managerNewPrice) || 0;
+                            const diff = newP - oldP;
+                            const pct = oldP > 0 ? Number(((diff / oldP) * 100).toFixed(2)) : 0;
+
+                            if (newP <= 0) {
+                              return (
+                                <div className="p-3 bg-slate-100 rounded-xl text-xs text-slate-500">
+                                  Silakan masukkan nominal harga baru yang valid di sebelah kiri.
+                                </div>
+                              );
+                            }
+
+                            if (diff < 0) {
+                              return (
+                                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl space-y-1">
+                                  <div className="flex items-center gap-1.5 text-emerald-800 font-bold text-xs">
+                                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                                    <span>Penurunan Harga (Penghematan Biaya Pengadaan)</span>
+                                    <span className="ml-auto bg-emerald-600 text-white text-[10px] px-2 py-0.5 rounded-full font-bold">
+                                      {pct}%
+                                    </span>
+                                  </div>
+                                  <p className="text-[11px] text-emerald-700">
+                                    Harga baru lebih hemat <b>{formatRupiah(Math.abs(diff))}</b> per {currentManagerItem.unit} dibandingkan harga sebelumnya.
+                                  </p>
+                                </div>
+                              );
+                            } else if (diff > 0) {
+                              return (
+                                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-1">
+                                  <div className="flex items-center gap-1.5 text-amber-800 font-bold text-xs">
+                                    <AlertTriangle className="w-4 h-4 text-amber-600" />
+                                    <span>Kenaikan Harga Terdeteksi</span>
+                                    <span className="ml-auto bg-amber-600 text-white text-[10px] px-2 py-0.5 rounded-full font-bold">
+                                      +{pct}%
+                                    </span>
+                                  </div>
+                                  <p className="text-[11px] text-amber-700">
+                                    Biaya bertambah <b>+{formatRupiah(diff)}</b> per {currentManagerItem.unit}. Pastikan kenaikan telah disesuaikan dengan pricelist resmi vendor.
+                                  </p>
+                                </div>
+                              );
+                            } else {
+                              return (
+                                <div className="p-3 bg-slate-100 border border-slate-200 rounded-xl text-xs text-slate-600">
+                                  Nominal harga baru sama persis dengan harga satuan saat ini ({formatRupiah(oldP)}).
+                                </div>
+                              );
+                            }
+                          })()}
+                        </div>
+                      </div>
+
+                      {/* Alasan Perubahan Harga (Quick Chips + Input) */}
+                      <div className="space-y-2 pt-2 border-t border-slate-100">
+                        <label className="text-xs font-bold text-slate-700 block">
+                          Alasan Penyesuaian Harga Vendor:
+                        </label>
+                        <div className="flex flex-wrap gap-1.5">
+                          {[
+                            "Pricelist Resmi Kuartal Baru Vendor",
+                            "Fluktuasi Nilai Tukar Kurs USD/IDR",
+                            "Kenaikan Biaya Logistik & BBM",
+                            "Diskon Negosiasi Volume Pembelian",
+                            "Penyesuaian Harga Komoditas Global",
+                          ].map((chip) => (
+                            <button
+                              key={chip}
+                              type="button"
+                              onClick={() => setManagerReason(chip)}
+                              className={`text-[11px] px-3 py-1.5 rounded-lg border font-medium transition cursor-pointer ${
+                                managerReason === chip
+                                  ? "bg-indigo-600 text-white border-indigo-600 font-bold"
+                                  : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
+                              }`}
+                            >
+                              {chip}
+                            </button>
+                          ))}
+                        </div>
+
+                        <input
+                          type="text"
+                          value={managerNotes}
+                          onChange={(e) => setManagerNotes(e.target.value)}
+                          placeholder="Catatan tambahan (misal: Sesuai surat edaran vendor No. 892/MKT/XI/2026)..."
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                        />
+                      </div>
+
+                      {/* Tombol Eksekusi Update & Sinkronisasi */}
+                      <div className="pt-2 flex items-center justify-between gap-3">
+                        <span className="text-[11px] text-slate-400">
+                          PIC Pelaksana: <b>{currentStaff?.name || "Staf Purchasing"}</b> ({currentStaff?.role || "Pengadaan"})
+                        </span>
+
+                        <button
+                          type="submit"
+                          disabled={isSavingManagerPrice || Number(managerNewPrice) <= 0}
+                          className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white px-5 py-2.5 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer shadow-sm active:scale-95"
+                        >
+                          {isSavingManagerPrice ? (
+                            <>
+                              <RefreshCw className="w-4 h-4 animate-spin" />
+                              <span>Menyimpan &amp; Menyinkronkan...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Zap className="w-4 h-4 text-amber-300" />
+                              <span>⚡ Simpan &amp; Sinkronkan Perubahan Harga Vendor</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-8 text-center bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200 text-slate-500 text-xs space-y-2">
+                    <Tag className="w-8 h-8 text-slate-400 mx-auto" />
+                    <p className="font-semibold text-slate-700">Belum ada bahan baku atau vendor yang dipilih.</p>
+                    <p className="text-slate-400 max-w-md mx-auto">
+                      Silakan pilih vendor dan bahan baku pada dropdown di atas, atau klik tombol <b>"Ubah Harga"</b> pada tabel daftar harga vendor di bawah ini.
+                    </p>
+                  </div>
+                )}
+              </form>
+            </div>
+
+            {/* Master Tabel: Semua Harga Penawaran Vendor yang Tersedia */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-5 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                <div>
+                  <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
+                    <span>Daftar Master Harga Bahan Baku Vendor yang Tersedia</span>
+                    <span className="text-[11px] font-semibold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full">
+                      {managerTablePrices.length} Penawaran
+                    </span>
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Klik tombol "Ubah Harga" pada baris vendor untuk langsung memuat ke formulir penyesuaian di atas
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+                    <input
+                      type="text"
+                      value={managerSearchQuery}
+                      onChange={(e) => setManagerSearchQuery(e.target.value)}
+                      placeholder="Cari bahan baku atau vendor..."
+                      className="pl-8 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-indigo-500 w-48 sm:w-56"
+                    />
+                  </div>
+
+                  <select
+                    value={managerCategoryFilter}
+                    onChange={(e) => setManagerCategoryFilter(e.target.value)}
+                    className="text-xs bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                  >
+                    <option value="ALL">Semua Kategori</option>
+                    {uniquePriceCategories.map((c) => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Tabel */}
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 text-slate-500 border-b border-slate-100 font-semibold">
+                    <tr>
+                      <th className="py-2.5 px-3">Bahan Baku &amp; Kategori</th>
+                      <th className="py-2.5 px-3">Vendor / Pemasok</th>
+                      <th className="py-2.5 px-3">Harga Satuan Saat Ini</th>
+                      <th className="py-2.5 px-3">Riwayat Perubahan Terakhir</th>
+                      <th className="py-2.5 px-3">Lead Time &amp; Termin</th>
+                      <th className="py-2.5 px-3 text-right">Aksi</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {managerTablePrices.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="py-8 text-center text-slate-400">
+                          Tidak ditemukan penawaran vendor yang cocok dengan filter pencarian.
+                        </td>
+                      </tr>
+                    ) : (
+                      managerTablePrices.map((item: any) => {
+                        const isCurrentActive = managerSelectedPriceId === item.id;
+                        let lastHistory: any = null;
+                        try {
+                          const h = JSON.parse(item.priceHistoryJson || "[]");
+                          if (h.length > 0) lastHistory = h[0];
+                        } catch {}
+
+                        return (
+                          <tr
+                            key={item.id}
+                            className={`transition hover:bg-slate-50/80 ${
+                              isCurrentActive ? "bg-indigo-50/50" : ""
+                            }`}
+                          >
+                            <td className="py-3 px-3">
+                              <div className="font-bold text-slate-900">{item.productName}</div>
+                              <div className="text-[11px] text-slate-500 flex items-center gap-1.5 mt-0.5">
+                                <span className="bg-slate-100 px-1.5 py-0.5 rounded text-[10px] font-medium text-slate-600">
+                                  {item.category}
+                                </span>
+                                {item.grade && <span>• {item.grade}</span>}
+                              </div>
+                            </td>
+
+                            <td className="py-3 px-3">
+                              <div className="font-semibold text-slate-800">{item.vendorName}</div>
+                              <div className="text-[11px] text-slate-500 mt-0.5">
+                                {item.vendorPhone || item.vendorWhatsapp || "-"}
+                              </div>
+                            </td>
+
+                            <td className="py-3 px-3">
+                              <div className="font-bold text-slate-900 text-sm">
+                                {formatRupiah(item.unitPrice)}
+                                <span className="text-slate-500 font-normal text-xs ml-1">/ {item.unit}</span>
+                              </div>
+                              {item.isBestPrice && (
+                                <span className="inline-block mt-0.5 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
+                                  ★ Harga Terbaik
+                                </span>
+                              )}
+                            </td>
+
+                            <td className="py-3 px-3">
+                              {lastHistory ? (
+                                <div className="space-y-0.5 text-[11px]">
+                                  <div className="flex items-center gap-1">
+                                    <span className="line-through text-slate-400">
+                                      {formatRupiah(lastHistory.oldPrice)}
+                                    </span>
+                                    <span>&rarr;</span>
+                                    <span className="font-bold text-slate-800">
+                                      {formatRupiah(lastHistory.newPrice)}
+                                    </span>
+                                    <span
+                                      className={`text-[10px] font-bold px-1 py-0.2 rounded ${
+                                        lastHistory.diff > 0
+                                          ? "bg-amber-100 text-amber-800"
+                                          : "bg-emerald-100 text-emerald-800"
+                                      }`}
+                                    >
+                                      {lastHistory.diff > 0 ? `+${lastHistory.percentDiff}%` : `${lastHistory.percentDiff}%`}
+                                    </span>
+                                  </div>
+                                  <div className="text-[10px] text-slate-500 italic truncate max-w-[180px]">
+                                    "{lastHistory.reason}"
+                                  </div>
+                                </div>
+                              ) : (
+                                <span className="text-[11px] text-slate-400">- Belum ada revisi -</span>
+                              )}
+                            </td>
+
+                            <td className="py-3 px-3 text-[11px] text-slate-600">
+                              <div>{item.leadTimeDays || 1} Hari Kerja</div>
+                              <div className="text-slate-400 text-[10px] mt-0.5">
+                                MOQ: {item.minOrderQty || 1} {item.unit} • {item.paymentTerms || "Tempo"}
+                              </div>
+                            </td>
+
+                            <td className="py-3 px-3 text-right">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setManagerSelectedVendor(item.vendorName);
+                                  setManagerSelectedPriceId(item.id);
+                                  setManagerNewPrice(item.unitPrice);
+                                  window.scrollTo({ top: 0, behavior: "smooth" });
+                                  showMessage("success", `Memuat data "${item.productName}" dari "${item.vendorName}" ke formulir.`);
+                                }}
+                                className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer ml-auto active:scale-95"
+                              >
+                                <RotateCcw className="w-3.5 h-3.5" />
+                                <span>Ubah Harga</span>
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB KHUSUS: RIWAYAT AKTIVITAS & AUDIT LOG PENGADAAN */}
+        {activeTab === "history" && (
+          <div className="space-y-6">
+            {/* Header Card */}
+            <div className="bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 text-white rounded-2xl p-6 shadow-sm border border-blue-900/40">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="p-2 bg-blue-500/20 text-blue-300 rounded-xl border border-blue-500/30">
+                      <History className="w-5 h-5 text-blue-400" />
+                    </span>
+                    <h2 className="text-xl font-bold tracking-tight text-white">
+                      Riwayat Aktivitas &amp; Audit Log Lengkap
+                    </h2>
+                    <span className="text-xs bg-blue-500/30 text-blue-200 border border-blue-400/30 px-2.5 py-0.5 rounded-full font-semibold">
+                      Audit Trail
+                    </span>
+                  </div>
+                  <p className="text-xs text-blue-200/80 max-w-2xl leading-relaxed">
+                    Seluruh jejak transaksi, penyesuaian harga vendor, pencatatan pembayaran kasir, verifikasi barang gudang,
+                    dan sinkronisasi pajak DJP tercatat secara kronologis untuk kepatuhan tata kelola (governance) dan transparansi pengadaan.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => router.refresh()}
+                    className="bg-white/10 hover:bg-white/15 text-blue-200 px-3.5 py-2 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer border border-white/10"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    <span>Segarkan Log</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Stat Summary Row */}
+              <div className="grid grid-cols-2 sm:grid-cols-6 gap-2.5 mt-5 pt-4 border-t border-blue-900/50 text-xs">
+                <div className="bg-white/5 rounded-xl p-2.5 border border-white/10">
+                  <span className="text-blue-300 text-[10px] block">Semua Log</span>
+                  <span className="text-base font-bold text-white mt-0.5 block">{activityCounts.all}</span>
+                </div>
+                <div className="bg-white/5 rounded-xl p-2.5 border border-white/10">
+                  <span className="text-indigo-300 text-[10px] block">Update Harga</span>
+                  <span className="text-base font-bold text-indigo-300 mt-0.5 block">{activityCounts.price}</span>
+                </div>
+                <div className="bg-white/5 rounded-xl p-2.5 border border-white/10">
+                  <span className="text-blue-300 text-[10px] block">Purchase Order</span>
+                  <span className="text-base font-bold text-blue-300 mt-0.5 block">{activityCounts.po}</span>
+                </div>
+                <div className="bg-white/5 rounded-xl p-2.5 border border-white/10">
+                  <span className="text-emerald-300 text-[10px] block">Pembayaran</span>
+                  <span className="text-base font-bold text-emerald-300 mt-0.5 block">{activityCounts.payment}</span>
+                </div>
+                <div className="bg-white/5 rounded-xl p-2.5 border border-white/10">
+                  <span className="text-amber-300 text-[10px] block">Gudang</span>
+                  <span className="text-base font-bold text-amber-300 mt-0.5 block">{activityCounts.warehouse}</span>
+                </div>
+                <div className="bg-white/5 rounded-xl p-2.5 border border-white/10">
+                  <span className="text-cyan-300 text-[10px] block">Pajak DJP</span>
+                  <span className="text-base font-bold text-cyan-300 mt-0.5 block">{activityCounts.tax}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Filter Toolbar */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-4 space-y-3">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                {/* Filter Tabs Chips */}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setHistoryTypeFilter("ALL")}
+                    className={`text-xs px-3 py-1.5 rounded-lg font-semibold transition cursor-pointer ${
+                      historyTypeFilter === "ALL"
+                        ? "bg-slate-900 text-white"
+                        : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                    }`}
+                  >
+                    Semua ({activityCounts.all})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHistoryTypeFilter("PRICE_UPDATE")}
+                    className={`text-xs px-3 py-1.5 rounded-lg font-semibold transition cursor-pointer flex items-center gap-1 ${
+                      historyTypeFilter === "PRICE_UPDATE"
+                        ? "bg-indigo-600 text-white"
+                        : "bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
+                    }`}
+                  >
+                    <Tag className="w-3.5 h-3.5" />
+                    <span>Update Harga ({activityCounts.price})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHistoryTypeFilter("PO_CREATED")}
+                    className={`text-xs px-3 py-1.5 rounded-lg font-semibold transition cursor-pointer flex items-center gap-1 ${
+                      historyTypeFilter === "PO_CREATED"
+                        ? "bg-blue-600 text-white"
+                        : "bg-blue-50 text-blue-700 hover:bg-blue-100"
+                    }`}
+                  >
+                    <ShoppingCart className="w-3.5 h-3.5" />
+                    <span>Purchase Order ({activityCounts.po})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHistoryTypeFilter("PAYMENT_RECORDED")}
+                    className={`text-xs px-3 py-1.5 rounded-lg font-semibold transition cursor-pointer flex items-center gap-1 ${
+                      historyTypeFilter === "PAYMENT_RECORDED"
+                        ? "bg-emerald-600 text-white"
+                        : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                    }`}
+                  >
+                    <Banknote className="w-3.5 h-3.5" />
+                    <span>Pembayaran ({activityCounts.payment})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHistoryTypeFilter("WAREHOUSE_RECEIVED")}
+                    className={`text-xs px-3 py-1.5 rounded-lg font-semibold transition cursor-pointer flex items-center gap-1 ${
+                      historyTypeFilter === "WAREHOUSE_RECEIVED"
+                        ? "bg-amber-600 text-white"
+                        : "bg-amber-50 text-amber-700 hover:bg-amber-100"
+                    }`}
+                  >
+                    <Warehouse className="w-3.5 h-3.5" />
+                    <span>Gudang ({activityCounts.warehouse})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHistoryTypeFilter("TAX_SYNC")}
+                    className={`text-xs px-3 py-1.5 rounded-lg font-semibold transition cursor-pointer flex items-center gap-1 ${
+                      historyTypeFilter === "TAX_SYNC"
+                        ? "bg-cyan-700 text-white"
+                        : "bg-cyan-50 text-cyan-800 hover:bg-cyan-100"
+                    }`}
+                  >
+                    <Landmark className="w-3.5 h-3.5" />
+                    <span>Pajak DJP ({activityCounts.tax})</span>
+                  </button>
+                </div>
+
+                {/* Search Box */}
+                <div className="relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                  <input
+                    type="text"
+                    value={historySearchQuery}
+                    onChange={(e) => setHistorySearchQuery(e.target.value)}
+                    placeholder="Cari aktivitas, vendor, staf, atau No PO..."
+                    className="pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 w-full sm:w-72"
+                  />
+                  {historySearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setHistorySearchQuery("")}
+                      className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* List Stream Card Riwayat Aktivitas */}
+            <div className="space-y-3">
+              {filteredActivityLogs.length === 0 ? (
+                <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center text-slate-400 space-y-2">
+                  <History className="w-10 h-10 text-slate-300 mx-auto" />
+                  <h4 className="font-bold text-slate-700 text-sm">Tidak ada riwayat aktivitas yang cocok</h4>
+                  <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                    Coba ganti filter kategori aktivitas atau reset kata kunci pencarian.
+                  </p>
+                </div>
+              ) : (
+                filteredActivityLogs.map((log: any) => {
+                  let meta: any = null;
+                  try {
+                    if (log.metadataJson) meta = JSON.parse(log.metadataJson);
+                  } catch {}
+
+                  // Tentukan Style Icon & Accent berdasarkan Tipe
+                  let typeBadge = {
+                    label: "Aktivitas",
+                    bg: "bg-slate-100 text-slate-700 border-slate-200",
+                    borderLeft: "border-l-slate-400",
+                    icon: <History className="w-4 h-4 text-slate-600" />,
+                  };
+
+                  if (log.type === "PRICE_UPDATE") {
+                    typeBadge = {
+                      label: "Pembaruan Harga",
+                      bg: "bg-indigo-50 text-indigo-700 border-indigo-200",
+                      borderLeft: "border-l-indigo-600",
+                      icon: <Tag className="w-4 h-4 text-indigo-600" />,
+                    };
+                  } else if (log.type === "PO_CREATED") {
+                    typeBadge = {
+                      label: "Purchase Order",
+                      bg: "bg-blue-50 text-blue-700 border-blue-200",
+                      borderLeft: "border-l-blue-600",
+                      icon: <ShoppingCart className="w-4 h-4 text-blue-600" />,
+                    };
+                  } else if (log.type === "PAYMENT_RECORDED") {
+                    typeBadge = {
+                      label: "Pembayaran Kasir",
+                      bg: "bg-emerald-50 text-emerald-700 border-emerald-200",
+                      borderLeft: "border-l-emerald-600",
+                      icon: <Banknote className="w-4 h-4 text-emerald-600" />,
+                    };
+                  } else if (log.type === "WAREHOUSE_RECEIVED") {
+                    typeBadge = {
+                      label: "Kedatangan Gudang",
+                      bg: "bg-amber-50 text-amber-700 border-amber-200",
+                      borderLeft: "border-l-amber-600",
+                      icon: <Warehouse className="w-4 h-4 text-amber-600" />,
+                    };
+                  } else if (log.type === "VENDOR_REGISTERED") {
+                    typeBadge = {
+                      label: "Vendor Baru",
+                      bg: "bg-purple-50 text-purple-700 border-purple-200",
+                      borderLeft: "border-l-purple-600",
+                      icon: <Building2 className="w-4 h-4 text-purple-600" />,
+                    };
+                  } else if (log.type === "TAX_SYNC") {
+                    typeBadge = {
+                      label: "Regulasi Pajak DJP",
+                      bg: "bg-cyan-50 text-cyan-800 border-cyan-200",
+                      borderLeft: "border-l-cyan-600",
+                      icon: <Landmark className="w-4 h-4 text-cyan-700" />,
+                    };
+                  }
+
+                  return (
+                    <div
+                      key={log.id}
+                      className={`bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 border-l-4 ${typeBadge.borderLeft} transition hover:shadow-xs space-y-2`}
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className={`p-1.5 rounded-lg border flex items-center justify-center ${typeBadge.bg}`}>
+                            {typeBadge.icon}
+                          </span>
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider ${typeBadge.bg}`}>
+                            {typeBadge.label}
+                          </span>
+                          <h4 className="font-bold text-slate-900 text-xs sm:text-sm">
+                            {log.title}
+                          </h4>
+                        </div>
+
+                        <div className="flex items-center gap-2 text-[11px] text-slate-500 shrink-0">
+                          <Clock className="w-3.5 h-3.5 text-slate-400" />
+                          <span className="font-semibold text-slate-700">{formatRelativeTime(log.createdAt)}</span>
+                          <span className="text-slate-300">•</span>
+                          <span>{formatDateTime(log.createdAt)}</span>
+                        </div>
+                      </div>
+
+                      <p className="text-xs text-slate-600 leading-relaxed pl-8">
+                        {log.description}
+                      </p>
+
+                      {/* Detail Pelaku & Metadata */}
+                      <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 pl-8 text-xs">
+                        <div className="flex items-center gap-2 text-slate-500 text-[11px]">
+                          <span className="font-semibold text-slate-700">Pelaku:</span>
+                          <span className="bg-slate-100 px-2 py-0.5 rounded font-medium text-slate-800">
+                            👤 {log.actor} ({log.actorRole || "Staf Pengadaan"})
+                          </span>
+                          {log.referenceId && (
+                            <>
+                              <span className="text-slate-300">•</span>
+                              <span className="font-mono bg-blue-50 text-blue-700 border border-blue-200 px-2 py-0.5 rounded text-[10px] font-bold">
+                                Ref: {log.referenceId}
+                              </span>
+                            </>
+                          )}
+                        </div>
+
+                        {/* Tombol Interaktif Sesuai Tipe */}
+                        <div className="flex items-center gap-2">
+                          {log.type === "PRICE_UPDATE" && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (log.referenceId) {
+                                  setManagerSelectedVendor(log.referenceId);
+                                }
+                                setActiveTab("priceManager");
+                              }}
+                              className="text-[11px] text-indigo-700 hover:text-indigo-900 font-bold hover:underline flex items-center gap-1 cursor-pointer"
+                            >
+                              <span>Buka Kelola Harga</span>
+                              <span>&rarr;</span>
+                            </button>
+                          )}
+
+                          {log.type === "PO_CREATED" && log.referenceId && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const matchedPo = initialData.purchaseOrders.find((p: any) => p.poNumber === log.referenceId);
+                                if (matchedPo) {
+                                  setPreviewPoModal(matchedPo);
+                                } else {
+                                  setActiveTab("orders");
+                                }
+                              }}
+                              className="text-[11px] text-blue-700 hover:text-blue-900 font-bold hover:underline flex items-center gap-1 cursor-pointer"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                              <span>Lihat Detail PO</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
               )}
             </div>
           </div>
