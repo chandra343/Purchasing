@@ -119,11 +119,25 @@ export async function getPurchasingDashboardData() {
 
   // Kalkulasi statistik keuangan & status PO
   let totalSpending = 0;
+  let totalPaid = 0;
+  let totalUnpaid = 0;
   let approvedCount = 0;
   let receivedCount = 0;
+  let unpaidCount = 0;
+  let paidCount = 0;
 
   for (const po of purchaseOrders) {
     totalSpending += po.totalAmount;
+    const paid = po.paidAmount || (po.paymentStatus === "PAID" ? po.totalAmount : 0);
+    totalPaid += paid;
+    totalUnpaid += Math.max(0, po.totalAmount - paid);
+
+    if (po.paymentStatus === "PAID") {
+      paidCount++;
+    } else {
+      unpaidCount++;
+    }
+
     if (po.status === "APPROVED") approvedCount++;
     if (po.status === "RECEIVED") receivedCount++;
   }
@@ -146,6 +160,10 @@ export async function getPurchasingDashboardData() {
     },
     stats: {
       totalSpending,
+      totalPaid,
+      totalUnpaid,
+      unpaidCount,
+      paidCount,
       totalPOs: purchaseOrders.length,
       approvedCount,
       receivedCount,
@@ -195,6 +213,11 @@ export async function createPurchaseOrder(data: {
   createdBy: string;
   taxRate?: number;
   taxLegalBasis?: string;
+  paymentTerms?: string;
+  paymentStatus?: "UNPAID" | "PARTIAL" | "PAID";
+  paidAmount?: number;
+  paymentMethod?: string;
+  paymentNotes?: string;
   items: Array<{
     productId?: string;
     productName: string;
@@ -254,7 +277,25 @@ export async function createPurchaseOrder(data: {
   const count = await prisma.purchaseOrder.count();
   const poNumber = `PO-${new Date().getFullYear()}-${String(count + 1).padStart(3, "0")}`;
 
-  // 1. Simpan di database Purchasing dengan tarif PPN resmi dan dasar hukumnya
+  // Logika Kasir & Pembayaran Awal
+  const paymentTerms = data.paymentTerms || "TEMPO_30";
+  let paidAmount = data.paidAmount !== undefined ? Math.max(0, Number(data.paidAmount)) : 0;
+  let paymentStatus = data.paymentStatus || "UNPAID";
+
+  if (paymentTerms === "CASH" && data.paymentStatus === "PAID") {
+    paidAmount = totalAmount;
+  } else if (paymentTerms === "DP_50" && (!data.paidAmount || data.paidAmount === 0)) {
+    paidAmount = Math.round(totalAmount * 0.5);
+    paymentStatus = "PARTIAL";
+  }
+
+  if (paidAmount >= totalAmount && totalAmount > 0) {
+    paymentStatus = "PAID";
+  } else if (paidAmount > 0) {
+    paymentStatus = "PARTIAL";
+  }
+
+  // 1. Simpan di database Purchasing dengan tarif PPN resmi, dasar hukum, dan data pembayaran
   const po = await prisma.purchaseOrder.create({
     data: {
       poNumber,
@@ -271,6 +312,13 @@ export async function createPurchaseOrder(data: {
       expectedDeliveryDate: data.expectedDeliveryDate ? new Date(data.expectedDeliveryDate) : undefined,
       createdBy: data.createdBy || "Tim Purchasing",
       itemsJson: JSON.stringify(itemsWithSubtotal),
+      paymentTerms,
+      paymentStatus,
+      paidAmount,
+      paymentMethod: data.paymentMethod || (paymentStatus === "PAID" ? "TRANSFER_BANK" : null),
+      paymentNotes: data.paymentNotes || null,
+      paymentRecordedBy: paymentStatus !== "UNPAID" ? (data.createdBy || "Kasir Purchasing") : null,
+      paymentDate: paymentStatus !== "UNPAID" ? new Date() : null,
     },
   });
 
@@ -395,4 +443,50 @@ export async function createStaffIdCard(data: {
 
   revalidatePath("/");
   return staff;
+}
+
+// 6. Pencatatan Kasir & Pembayaran PO
+export async function recordPoPayment(data: {
+  poId: string;
+  paymentStatus: "UNPAID" | "PARTIAL" | "PAID";
+  paidAmount: number;
+  paymentMethod?: string;
+  paymentTerms?: string;
+  paymentNotes?: string;
+  paymentRecordedBy: string;
+  paymentProofUrl?: string;
+}) {
+  try {
+    const po = await prisma.purchaseOrder.findUnique({ where: { id: data.poId } });
+    if (!po) throw new Error("Purchase Order tidak ditemukan.");
+
+    const finalPaidAmount = Math.max(0, Number(data.paidAmount));
+    let finalStatus: string = data.paymentStatus;
+    if (finalPaidAmount >= po.totalAmount && po.totalAmount > 0) {
+      finalStatus = "PAID";
+    } else if (finalPaidAmount > 0) {
+      finalStatus = "PARTIAL";
+    } else {
+      finalStatus = "UNPAID";
+    }
+
+    await prisma.purchaseOrder.update({
+      where: { id: data.poId },
+      data: {
+        paymentStatus: finalStatus,
+        paidAmount: finalPaidAmount,
+        paymentMethod: data.paymentMethod || po.paymentMethod || "TRANSFER_BANK",
+        paymentTerms: data.paymentTerms || po.paymentTerms || "TEMPO_30",
+        paymentNotes: data.paymentNotes || null,
+        paymentProofUrl: data.paymentProofUrl || po.paymentProofUrl || null,
+        paymentRecordedBy: data.paymentRecordedBy || "Kasir Purchasing",
+        paymentDate: finalStatus === "UNPAID" ? null : new Date(),
+      },
+    });
+
+    revalidatePath("/");
+    return { success: true, message: `Status pembayaran PO ${po.poNumber} berhasil diperbarui!` };
+  } catch (e: any) {
+    return { success: false, error: e.message };
+  }
 }

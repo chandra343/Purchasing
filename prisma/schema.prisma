@@ -48,6 +48,17 @@ model PurchaseOrder {
   notes                String?
   expectedDeliveryDate DateTime?
   createdBy            String    @default("Tim Purchasing")
+  
+  // Informasi Pembayaran Kasir / Finansial
+  paymentStatus        String    @default("UNPAID") // UNPAID, PARTIAL, PAID
+  paymentTerms         String?   @default("TEMPO_30") // CASH, COD, TEMPO_14, TEMPO_30, TEMPO_60, DP_50
+  paidAmount           Float     @default(0)
+  paymentMethod        String?   // TRANSFER_BANK, TUNAI_CASH, GIRO, KARTU_KREDIT
+  paymentProofUrl      String?   // Foto struk / faktur / bukti transfer
+  paymentDate          DateTime? // Waktu pembayaran dicatat
+  paymentNotes         String?   // No. referensi transfer / catatan kasir
+  paymentRecordedBy    String?   // Nama kasir / staf finance yang mencatat pembayaran
+
   receivedAt           DateTime?
   receivedBy           String?
   receivedWarehouse    String?

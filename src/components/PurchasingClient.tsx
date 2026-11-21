@@ -10,6 +10,7 @@ import {
   markAllNotificationsAsRead,
   markNotificationAsRead,
   syncTaxFromPajakIndonesia,
+  recordPoPayment,
 } from "@/app/actions";
 import {
   ShoppingCart,
@@ -50,6 +51,11 @@ import {
   Filter,
   ArrowUpDown,
   RotateCcw,
+  Trash2,
+  Banknote,
+  Receipt,
+  Wallet,
+  Check,
 } from "lucide-react";
 import LocationMapEmbed from "./LocationMapEmbed";
 
@@ -92,13 +98,26 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
   // Filter & Search State untuk Purchase Orders (PO)
   const [poSearchQuery, setPoSearchQuery] = useState<string>("");
   const [poStatusFilter, setPoStatusFilter] = useState<"ALL" | "WAITING" | "RECEIVED">("ALL");
+  const [poPaymentFilter, setPoPaymentFilter] = useState<"ALL" | "UNPAID" | "PAID">("ALL");
   const [poVendorFilter, setPoVendorFilter] = useState<string>("ALL");
   const [poSortBy, setPoSortBy] = useState<"NEWEST" | "OLDEST" | "AMOUNT_DESC" | "AMOUNT_ASC">("NEWEST");
   const [showTaxModal, setShowTaxModal] = useState<boolean>(false);
   const [isSyncingTax, setIsSyncingTax] = useState<boolean>(false);
   const [isSubmittingPo, setIsSubmittingPo] = useState<boolean>(false);
 
-  // Form State Buat PO Baru
+  // Modal Kasir & Pembayaran PO
+  const [paymentModalPo, setPaymentModalPo] = useState<any | null>(null);
+  const [paymentForm, setPaymentForm] = useState({
+    paymentStatus: "PAID" as "UNPAID" | "PARTIAL" | "PAID",
+    paidAmount: 0,
+    paymentMethod: "TRANSFER_BANK",
+    paymentTerms: "TEMPO_30",
+    paymentNotes: "",
+    paymentProofUrl: "",
+  });
+  const [isSubmittingPayment, setIsSubmittingPayment] = useState<boolean>(false);
+
+  // Form State Buat PO Baru (Mendukung Multi-Item Keranjang)
   const [newPoForm, setNewPoForm] = useState({
     supplierName: "",
     supplierPhone: "",
@@ -106,21 +125,89 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
     supplierAddress: "",
     expectedDeliveryDate: "",
     notes: "",
-    productId: "",
-    productName: "",
-    quantity: 10,
-    unit: "pcs",
-    unitPrice: 100000,
+    paymentTerms: "TEMPO_30", // CASH, COD, TEMPO_14, TEMPO_30, TEMPO_60, DP_50
+    paymentStatus: "UNPAID" as "UNPAID" | "PARTIAL" | "PAID",
+    paidAmount: 0,
     taxRate: initialData.taxSetting?.rate || 12,
     taxCategory: "STANDAR_12",
     taxLegalBasis: initialData.taxSetting?.legalBasis || "UU No. 7 Tahun 2021 (UU HPP) Pasal 7 (1b)",
+    items: [
+      {
+        id: "item-1",
+        productId: "",
+        productName: "",
+        quantity: 1,
+        unit: "unit",
+        unitPrice: 100000,
+      },
+    ],
   });
 
-  // Auto-Detect State untuk Perusahaan / Retail & Produk
+  // Auto-Detect State untuk Perusahaan / Retail
   const [supplierMatch, setSupplierMatch] = useState<any | null>(null);
   const [supplierSuggestions, setSupplierSuggestions] = useState<any[]>([]);
-  const [productMatch, setProductMatch] = useState<any | null>(null);
-  const [productSuggestions, setProductSuggestions] = useState<any[]>([]);
+
+  // Item Cart Handlers for Multi-Item PO
+  const addItemRow = () => {
+    setNewPoForm((prev) => ({
+      ...prev,
+      items: [
+        ...prev.items,
+        {
+          id: `item-${Date.now()}-${Math.random()}`,
+          productId: "",
+          productName: "",
+          quantity: 1,
+          unit: "unit",
+          unitPrice: 0,
+        },
+      ],
+    }));
+  };
+
+  const removeItemRow = (idx: number) => {
+    if (newPoForm.items.length <= 1) return;
+    setNewPoForm((prev) => ({
+      ...prev,
+      items: prev.items.filter((_, i) => i !== idx),
+    }));
+  };
+
+  const updateItemRow = (idx: number, field: string, value: any) => {
+    setNewPoForm((prev) => {
+      const copy = [...prev.items];
+      copy[idx] = { ...copy[idx], [field]: value };
+      return { ...prev, items: copy };
+    });
+  };
+
+  const handleSelectProductForItem = (idx: number, prod: any) => {
+    setNewPoForm((prev) => {
+      const copy = [...prev.items];
+      copy[idx] = {
+        ...copy[idx],
+        productId: prod.id || "",
+        productName: prod.name || "",
+        unit: prod.unit || copy[idx].unit || "unit",
+      };
+      return { ...prev, items: copy };
+    });
+  };
+
+  const cartSubtotal = useMemo(() => {
+    return newPoForm.items.reduce(
+      (sum, it) => sum + (Number(it.quantity) || 0) * (Number(it.unitPrice) || 0),
+      0
+    );
+  }, [newPoForm.items]);
+
+  const cartTax = useMemo(() => {
+    return Math.round(cartSubtotal * ((Number(newPoForm.taxRate) || 0) / 100));
+  }, [cartSubtotal, newPoForm.taxRate]);
+
+  const cartTotal = useMemo(() => {
+    return cartSubtotal + cartTax;
+  }, [cartSubtotal, cartTax]);
 
   // Gabungkan semua vendor & supplier yang diketahui
   const allKnownSuppliers = useMemo(() => {
@@ -164,12 +251,17 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
   }, [initialData.purchaseOrders]);
 
   const isAnyPoFilterActive = Boolean(
-    poSearchQuery.trim() !== "" || poStatusFilter !== "ALL" || poVendorFilter !== "ALL" || poSortBy !== "NEWEST"
+    poSearchQuery.trim() !== "" ||
+      poStatusFilter !== "ALL" ||
+      poPaymentFilter !== "ALL" ||
+      poVendorFilter !== "ALL" ||
+      poSortBy !== "NEWEST"
   );
 
   const handleResetPoFilters = () => {
     setPoSearchQuery("");
     setPoStatusFilter("ALL");
+    setPoPaymentFilter("ALL");
     setPoVendorFilter("ALL");
     setPoSortBy("NEWEST");
   };
@@ -178,11 +270,18 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
   const filteredPurchaseOrders = useMemo(() => {
     let list = [...(initialData.purchaseOrders || [])];
 
-    // Filter Status Kedatangan
+    // Filter Status Kedatangan Gudang
     if (poStatusFilter === "WAITING") {
       list = list.filter((po: any) => po.status !== "RECEIVED");
     } else if (poStatusFilter === "RECEIVED") {
       list = list.filter((po: any) => po.status === "RECEIVED");
+    }
+
+    // Filter Status Pembayaran Kasir
+    if (poPaymentFilter === "UNPAID") {
+      list = list.filter((po: any) => po.paymentStatus !== "PAID");
+    } else if (poPaymentFilter === "PAID") {
+      list = list.filter((po: any) => po.paymentStatus === "PAID");
     }
 
     // Filter Vendor / Perusahaan
@@ -223,7 +322,97 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
     });
 
     return list;
-  }, [initialData.purchaseOrders, poStatusFilter, poVendorFilter, poSearchQuery, poSortBy]);
+  }, [initialData.purchaseOrders, poStatusFilter, poPaymentFilter, poVendorFilter, poSearchQuery, poSortBy]);
+
+  // Handler Buka & Simpan Pembayaran Kasir
+  const handleOpenPaymentModal = (po: any) => {
+    setPaymentModalPo(po);
+    setPaymentForm({
+      paymentStatus: (po.paymentStatus as any) || "PAID",
+      paidAmount: po.paidAmount !== undefined && po.paidAmount > 0 ? po.paidAmount : po.totalAmount,
+      paymentMethod: po.paymentMethod || "TRANSFER_BANK",
+      paymentTerms: po.paymentTerms || "TEMPO_30",
+      paymentNotes: po.paymentNotes || "",
+      paymentProofUrl: po.paymentProofUrl || "",
+    });
+  };
+
+  const handleSavePayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!paymentModalPo) return;
+    setIsSubmittingPayment(true);
+    try {
+      const res = await recordPoPayment({
+        poId: paymentModalPo.id,
+        paymentStatus: paymentForm.paymentStatus,
+        paidAmount: Number(paymentForm.paidAmount),
+        paymentMethod: paymentForm.paymentMethod,
+        paymentTerms: paymentForm.paymentTerms,
+        paymentNotes: paymentForm.paymentNotes,
+        paymentRecordedBy: currentStaff?.name || "Kasir Purchasing",
+        paymentProofUrl: paymentForm.paymentProofUrl || undefined,
+      });
+      if (res.success) {
+        showMessage("success", res.message || "Status pembayaran berhasil dicatat!");
+        setPaymentModalPo(null);
+        router.refresh();
+      } else {
+        showMessage("error", res.error || "Gagal mencatat pembayaran.");
+      }
+    } catch (err: any) {
+      showMessage("error", err.message || "Terjadi kesalahan sistem pembayaran.");
+    } finally {
+      setIsSubmittingPayment(false);
+    }
+  };
+
+  // Handler Kirim PO Resmi ke WhatsApp Vendor
+  const handleSendPoWhatsApp = (po: any) => {
+    const rawPhone = po.supplierWhatsapp || po.supplierPhone || "";
+    const cleanDigits = rawPhone.replace(/[^0-9]/g, "");
+    const formattedPhone = cleanDigits.startsWith("0") ? "62" + cleanDigits.slice(1) : cleanDigits;
+
+    let itemsText = "";
+    (po.items || []).forEach((it: any, i: number) => {
+      itemsText += `  ${i + 1}. *${it.productName}*\n     Jumlah: ${it.quantity} ${it.unit} x ${formatRupiah(it.unitPrice)} = ${formatRupiah(it.subtotal || it.quantity * it.unitPrice)}\n`;
+    });
+
+    const termsLabel =
+      po.paymentTerms === "CASH"
+        ? "Tunai di Muka"
+        : po.paymentTerms === "COD"
+        ? "Cash on Delivery (COD)"
+        : po.paymentTerms === "DP_50"
+        ? "Uang Muka 50% (DP 50%)"
+        : po.paymentTerms === "TEMPO_60"
+        ? "Tempo 60 Hari (Net 60)"
+        : "Tempo 30 Hari (Net 30)";
+
+    const msg =
+      `*SURAT PURCHASE ORDER (PO) RESMI*\n` +
+      `No. PO: *${po.poNumber}*\n` +
+      `Tanggal: ${formatDate(po.createdAt)}\n` +
+      `Kepada Yth: *${po.supplierName}*\n\n` +
+      `Dengan hormat,\n` +
+      `Berikut rincian pesanan pengadaan dari kami:\n\n` +
+      `${itemsText}\n` +
+      `--------------------------------\n` +
+      `Subtotal: ${formatRupiah(po.subtotal)}\n` +
+      `PPN (${po.taxRate || 12}%): ${formatRupiah(po.tax)}\n` +
+      `*TOTAL TAGIHAN: ${formatRupiah(po.totalAmount)}*\n` +
+      `Termin Pembayaran: *${termsLabel}*\n` +
+      (po.expectedDeliveryDate ? `Estimasi Pengiriman: ${formatDate(po.expectedDeliveryDate)}\n` : "") +
+      (po.notes ? `Catatan: ${po.notes}\n` : "") +
+      `\nMohon konfirmasi ketersediaan barang dan jadwal pengiriman ke gudang kami. Terima kasih.\n\n` +
+      `Hormat kami,\n` +
+      `*${po.createdBy}*\n` +
+      `Divisi Purchasing & Pengadaan`;
+
+    const waUrl = formattedPhone
+      ? `https://wa.me/${formattedPhone}?text=${encodeURIComponent(msg)}`
+      : `https://wa.me/?text=${encodeURIComponent(msg)}`;
+    window.open(waUrl, "_blank");
+  };
 
   // Handler Auto-Detect saat Ketik Nama Perusahaan atau Retail
   const handleSupplierNameChangeInNewPo = (val: string) => {
@@ -281,67 +470,6 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
       "success",
       `✓ Data perusahaan "${s.name}" berhasil diisi otomatis!`
     );
-  };
-
-  // Handler Auto-Detect saat Ketik Nama Barang yang Dipesan
-  const handleProductNameChangeInNewPo = (val: string) => {
-    const trimmed = val.trim().toLowerCase();
-    const products = initialData?.gudangIntegration?.products || [];
-    const matched = products.find(
-      (p: any) => p.name.trim().toLowerCase() === trimmed
-    );
-
-    if (matched && trimmed.length > 0) {
-      setNewPoForm((prev) => ({
-        ...prev,
-        productId: matched.id,
-        productName: val,
-        unit: matched.unit || prev.unit || "pcs",
-        supplierName: prev.supplierName || matched.supplier?.name || "",
-        supplierPhone: prev.supplierPhone || matched.supplier?.phone || "",
-        supplierWhatsapp: prev.supplierWhatsapp || matched.supplier?.whatsapp || "",
-        supplierAddress: prev.supplierAddress || matched.supplier?.address || "",
-      }));
-      setProductMatch(matched);
-      setProductSuggestions([]);
-      showMessage(
-        "success",
-        `✓ Barang "${matched.name}" terdeteksi di katalog gudang (Satuan: ${matched.unit})`
-      );
-    } else {
-      setNewPoForm((prev) => ({
-        ...prev,
-        productName: val,
-      }));
-      setProductMatch(null);
-
-      if (trimmed.length >= 2) {
-        const partials = products.filter(
-          (p: any) =>
-            p.name.toLowerCase().includes(trimmed) &&
-            p.name.toLowerCase() !== trimmed
-        );
-        setProductSuggestions(partials.slice(0, 3));
-      } else {
-        setProductSuggestions([]);
-      }
-    }
-  };
-
-  const applyProductToNewPo = (p: any) => {
-    setNewPoForm((prev) => ({
-      ...prev,
-      productId: p.id,
-      productName: p.name,
-      unit: p.unit || "pcs",
-      supplierName: prev.supplierName || p.supplier?.name || "",
-      supplierPhone: prev.supplierPhone || p.supplier?.phone || "",
-      supplierWhatsapp: prev.supplierWhatsapp || p.supplier?.whatsapp || "",
-      supplierAddress: prev.supplierAddress || p.supplier?.address || "",
-    }));
-    setProductMatch(p);
-    setProductSuggestions([]);
-    showMessage("success", `✓ Barang "${p.name}" dipilih dari katalog gudang.`);
   };
 
   // Form State Vendor Baru
@@ -432,23 +560,38 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
       supplierAddress: item.preferredSupplier?.address || "",
       expectedDeliveryDate: new Date(Date.now() + 86400000 * 3).toISOString().split("T")[0],
       notes: `Restock otomatis: Stok fisik di gudang menipis (Sisa ${item.currentStock} ${item.unit})`,
-      productId: item.productId,
-      productName: item.productName,
-      quantity: item.recommendedReorderQty || 10,
-      unit: item.unit,
-      unitPrice: 50000,
+      paymentTerms: "TEMPO_30",
+      paymentStatus: "UNPAID",
+      paidAmount: 0,
       taxRate: initialData.taxSetting?.rate || 12,
       taxCategory: "STANDAR_12",
       taxLegalBasis: initialData.taxSetting?.legalBasis || "UU No. 7 Tahun 2021 (UU HPP) Pasal 7 (1b)",
+      items: [
+        {
+          id: `item-${Date.now()}`,
+          productId: item.productId || item.id || "",
+          productName: item.productName || item.name || "",
+          quantity: item.recommendedReorderQty || 10,
+          unit: item.unit || "unit",
+          unitPrice: 50000,
+        },
+      ],
     });
     setSupplierMatch(item.preferredSupplier || null);
-    setProductMatch(item);
     setShowCreatePoModal(true);
   };
 
   // Quick Action: Ubah PR dari Gudang menjadi PO
   const handleConvertPRToPO = (pr: any) => {
-    const firstItem = (pr.items || [])[0];
+    const prItems = (pr.items || []).map((it: any, i: number) => ({
+      id: `item-${Date.now()}-${i}`,
+      productId: it.productId || "",
+      productName: it.productName || "",
+      quantity: Number(it.requestedQty || 10),
+      unit: it.unit || "pcs",
+      unitPrice: 50000,
+    }));
+
     setNewPoForm({
       supplierName: "",
       supplierPhone: "",
@@ -456,17 +599,24 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
       supplierAddress: "",
       expectedDeliveryDate: new Date(Date.now() + 86400000 * 3).toISOString().split("T")[0],
       notes: `Realisasi Purchase Requisition No: ${pr.prNumber} diajukan oleh ${pr.requestedBy}`,
-      productId: firstItem?.productId || "",
-      productName: firstItem?.productName || "",
-      quantity: firstItem?.requestedQty || 10,
-      unit: firstItem?.unit || "pcs",
-      unitPrice: 50000,
+      paymentTerms: "TEMPO_30",
+      paymentStatus: "UNPAID",
+      paidAmount: 0,
       taxRate: initialData.taxSetting?.rate || 12,
       taxCategory: "STANDAR_12",
       taxLegalBasis: initialData.taxSetting?.legalBasis || "UU No. 7 Tahun 2021 (UU HPP) Pasal 7 (1b)",
+      items: prItems.length > 0 ? prItems : [
+        {
+          id: `item-${Date.now()}`,
+          productId: "",
+          productName: "",
+          quantity: 1,
+          unit: "pcs",
+          unitPrice: 50000,
+        },
+      ],
     });
     setSupplierMatch(null);
-    setProductMatch(null);
     setShowCreatePoModal(true);
   };
 
@@ -488,11 +638,20 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
     }
   };
 
-  // Submit Buat PO
+  // Submit Buat PO Multi-Item & Pembayaran
   const handleCreatePoSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newPoForm.supplierName || !newPoForm.productName || !newPoForm.quantity) {
-      showMessage("error", "Lengkapi vendor, produk, dan jumlah pesanan.");
+    const validItems = newPoForm.items.filter(
+      (it) => it.productName.trim().length > 0 && Number(it.quantity) > 0
+    );
+
+    if (!newPoForm.supplierName.trim()) {
+      showMessage("error", "Nama perusahaan atau retail tempat pembelian wajib diisi.");
+      return;
+    }
+
+    if (validItems.length === 0) {
+      showMessage("error", "Masukkan minimal satu barang dengan nama dan jumlah yang valid di keranjang.");
       return;
     }
 
@@ -508,19 +667,55 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
         createdBy: currentStaff?.name || "Tim Purchasing",
         taxRate: Number(newPoForm.taxRate),
         taxLegalBasis: newPoForm.taxLegalBasis,
+        paymentTerms: newPoForm.paymentTerms,
+        paymentStatus: newPoForm.paymentStatus,
+        paidAmount:
+          newPoForm.paymentStatus === "PAID"
+            ? cartTotal
+            : newPoForm.paymentStatus === "PARTIAL"
+            ? Math.round(cartTotal * 0.5)
+            : 0,
+        items: validItems.map((it) => ({
+          productId: it.productId,
+          productName: it.productName,
+          quantity: Number(it.quantity),
+          unit: it.unit,
+          unitPrice: Number(it.unitPrice),
+        })),
+      });
+
+      setShowCreatePoModal(false);
+      showMessage(
+        "success",
+        `✓ PO ${created.poNumber} berhasil diterbitkan (${validItems.length} jenis barang, PPN ${created.taxRate || newPoForm.taxRate}% - ${newPoForm.taxLegalBasis}) dan tersinkronisasi ke Gudang!`
+      );
+
+      // Reset form ke 1 item baru
+      setNewPoForm({
+        supplierName: "",
+        supplierPhone: "",
+        supplierWhatsapp: "",
+        supplierAddress: "",
+        expectedDeliveryDate: "",
+        notes: "",
+        paymentTerms: "TEMPO_30",
+        paymentStatus: "UNPAID",
+        paidAmount: 0,
+        taxRate: initialData.taxSetting?.rate || 12,
+        taxCategory: "STANDAR_12",
+        taxLegalBasis: initialData.taxSetting?.legalBasis || "UU No. 7 Tahun 2021 (UU HPP) Pasal 7 (1b)",
         items: [
           {
-            productId: newPoForm.productId,
-            productName: newPoForm.productName,
-            quantity: Number(newPoForm.quantity),
-            unit: newPoForm.unit,
-            unitPrice: Number(newPoForm.unitPrice),
+            id: `item-${Date.now()}`,
+            productId: "",
+            productName: "",
+            quantity: 1,
+            unit: "pcs",
+            unitPrice: 100000,
           },
         ],
       });
 
-      setShowCreatePoModal(false);
-      showMessage("success", `✓ PO ${created.poNumber} berhasil diterbitkan (PPN ${created.taxRate || newPoForm.taxRate}% - ${newPoForm.taxLegalBasis}) dan tersinkronisasi ke Gudang!`);
       router.refresh();
     } catch (err: any) {
       showMessage("error", err.message || "Gagal menerbitkan Purchase Order.");
@@ -823,19 +1018,25 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                   supplierAddress: "",
                   expectedDeliveryDate: "",
                   notes: "",
-                  productId: initialData?.gudangIntegration?.products?.[0]?.id || "",
-                  productName: initialData?.gudangIntegration?.products?.[0]?.name || "",
-                  quantity: 10,
-                  unit: initialData?.gudangIntegration?.products?.[0]?.unit || "pcs",
-                  unitPrice: 100000,
+                  paymentTerms: "TEMPO_30",
+                  paymentStatus: "UNPAID",
+                  paidAmount: 0,
                   taxRate: initialData.taxSetting?.rate || 12,
                   taxCategory: "STANDAR_12",
                   taxLegalBasis: initialData.taxSetting?.legalBasis || "UU No. 7 Tahun 2021 (UU HPP) Pasal 7 (1b)",
+                  items: [
+                    {
+                      id: "item-1",
+                      productId: initialData?.gudangIntegration?.products?.[0]?.id || "",
+                      productName: initialData?.gudangIntegration?.products?.[0]?.name || "",
+                      quantity: 10,
+                      unit: initialData?.gudangIntegration?.products?.[0]?.unit || "unit",
+                      unitPrice: 100000,
+                    },
+                  ],
                 });
                 setSupplierMatch(null);
-                setProductMatch(null);
                 setSupplierSuggestions([]);
-                setProductSuggestions([]);
                 setShowCreatePoModal(true);
               }}
               className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold shadow-md transition flex items-center gap-2 cursor-pointer active:scale-98"
@@ -857,39 +1058,54 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
           </div>
         </div>
 
-        {/* 4 Stat Cards */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* 5 Stat Cards Finansial & Operasional */}
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3.5">
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
             <div className="flex items-center justify-between text-slate-500 text-xs font-medium">
               <span>Total Belanja Pengadaan</span>
               <TrendingUp className="w-4 h-4 text-emerald-600" />
             </div>
-            <div className="text-lg sm:text-xl font-black text-slate-900 mt-2 truncate">
+            <div className="text-base sm:text-lg font-black text-slate-900 mt-2 truncate">
               {formatRupiah(initialData.stats.totalSpending)}
             </div>
-            <div className="text-[11px] text-slate-400 mt-1">Akumulasi seluruh PO resmi</div>
+            <div className="text-[10px] text-slate-400 mt-1">Akumulasi seluruh PO resmi</div>
+          </div>
+
+          <div className="bg-white p-4 rounded-xl border border-rose-200/80 bg-rose-50/20 shadow-xs">
+            <div className="flex items-center justify-between text-rose-700 text-xs font-semibold">
+              <span>Tagihan Belum Lunas (Tempo)</span>
+              <Wallet className="w-4 h-4 text-rose-600" />
+            </div>
+            <div className="text-base sm:text-lg font-black text-rose-600 mt-2 truncate">
+              {formatRupiah(initialData.stats.totalUnpaid || 0)}
+            </div>
+            <div className="text-[10px] text-rose-500 mt-1">
+              {initialData.stats.unpaidCount || 0} PO menunggu pembayaran
+            </div>
+          </div>
+
+          <div className="bg-white p-4 rounded-xl border border-emerald-200/80 bg-emerald-50/20 shadow-xs">
+            <div className="flex items-center justify-between text-emerald-800 text-xs font-semibold">
+              <span>Pembayaran Lunas (Kasir)</span>
+              <Banknote className="w-4 h-4 text-emerald-600" />
+            </div>
+            <div className="text-base sm:text-lg font-black text-emerald-700 mt-2 truncate">
+              {formatRupiah(initialData.stats.totalPaid || 0)}
+            </div>
+            <div className="text-[10px] text-emerald-600 mt-1">
+              {initialData.stats.paidCount || 0} PO telah dilunasi
+            </div>
           </div>
 
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
             <div className="flex items-center justify-between text-slate-500 text-xs font-medium">
-              <span>PO Aktif (Terkirim ke Gudang)</span>
-              <ShoppingCart className="w-4 h-4 text-indigo-600" />
-            </div>
-            <div className="text-xl sm:text-2xl font-black text-slate-900 mt-2">
-              {initialData.stats.approvedCount} <span className="text-xs font-normal text-slate-500">pesanan</span>
-            </div>
-            <div className="text-[11px] text-slate-400 mt-1">Menunggu kedatangan fisik</div>
-          </div>
-
-          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-            <div className="flex items-center justify-between text-slate-500 text-xs font-medium">
-              <span>PO Selesai Diterima Gudang</span>
+              <span>Kedatangan di Gudang</span>
               <CheckCircle2 className="w-4 h-4 text-emerald-600" />
             </div>
-            <div className="text-xl sm:text-2xl font-black text-emerald-700 mt-2">
-              {initialData.stats.receivedCount} <span className="text-xs font-normal text-slate-500">selesai</span>
+            <div className="text-base sm:text-lg font-black text-slate-900 mt-2">
+              {initialData.stats.receivedCount} <span className="text-xs font-normal text-slate-400">/ {initialData.stats.totalPOs} PO</span>
             </div>
-            <div className="text-[11px] text-slate-400 mt-1">Stok fisik telah masuk</div>
+            <div className="text-[10px] text-slate-400 mt-1">Stok fisik telah diterima</div>
           </div>
 
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
@@ -897,10 +1113,10 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
               <span>Barang Gudang Menipis</span>
               <AlertTriangle className="w-4 h-4 text-amber-500" />
             </div>
-            <div className={`text-xl sm:text-2xl font-black mt-2 ${initialData.stats.lowStockGudangCount > 0 ? "text-rose-600" : "text-slate-900"}`}>
+            <div className={`text-base sm:text-lg font-black mt-2 ${initialData.stats.lowStockGudangCount > 0 ? "text-rose-600" : "text-slate-900"}`}>
               {initialData.stats.lowStockGudangCount} <span className="text-xs font-normal text-slate-500">produk</span>
             </div>
-            <div className="text-[11px] text-slate-400 mt-1">Perlu dibuatkan PO restock</div>
+            <div className="text-[10px] text-slate-400 mt-1">Perlu dibuatkan PO restock</div>
           </div>
         </div>
 
@@ -1218,45 +1434,88 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                   <div className="flex flex-wrap items-center gap-1.5">
                     <span className="text-[11px] font-medium text-slate-500 flex items-center gap-1 mr-1">
                       <Filter className="w-3 h-3 text-slate-400" />
-                      <span>Filter:</span>
+                      <span>Status Gudang:</span>
                     </span>
 
                     <button
                       type="button"
                       onClick={() => setPoStatusFilter("ALL")}
-                      className={`px-2.5 py-1 rounded-md text-xs font-semibold transition cursor-pointer ${
+                      className={`px-2 py-0.5 rounded-md text-xs font-semibold transition cursor-pointer ${
                         poStatusFilter === "ALL"
                           ? "bg-slate-900 text-white shadow-xs"
                           : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-100"
                       }`}
                     >
-                      Semua Status ({initialData.purchaseOrders.length})
+                      Semua ({initialData.purchaseOrders.length})
                     </button>
 
                     <button
                       type="button"
                       onClick={() => setPoStatusFilter("WAITING")}
-                      className={`px-2.5 py-1 rounded-md text-xs font-semibold transition cursor-pointer flex items-center gap-1 ${
+                      className={`px-2 py-0.5 rounded-md text-xs font-semibold transition cursor-pointer flex items-center gap-1 ${
                         poStatusFilter === "WAITING"
                           ? "bg-amber-600 text-white shadow-xs"
                           : "bg-white text-amber-800 border border-amber-200 hover:bg-amber-50"
                       }`}
                     >
                       <Clock className="w-3 h-3" />
-                      <span>Menunggu Gudang ({waitingPoCount})</span>
+                      <span>Menunggu ({waitingPoCount})</span>
                     </button>
 
                     <button
                       type="button"
                       onClick={() => setPoStatusFilter("RECEIVED")}
-                      className={`px-2.5 py-1 rounded-md text-xs font-semibold transition cursor-pointer flex items-center gap-1 ${
+                      className={`px-2 py-0.5 rounded-md text-xs font-semibold transition cursor-pointer flex items-center gap-1 ${
                         poStatusFilter === "RECEIVED"
                           ? "bg-emerald-600 text-white shadow-xs"
                           : "bg-white text-emerald-800 border border-emerald-200 hover:bg-emerald-50"
                       }`}
                     >
                       <CheckCircle2 className="w-3 h-3" />
-                      <span>Diterima Gudang ({receivedPoCount})</span>
+                      <span>Diterima ({receivedPoCount})</span>
+                    </button>
+
+                    {/* Filter Pembayaran Kasir */}
+                    <span className="text-slate-300 mx-1">|</span>
+                    <span className="text-[11px] font-medium text-slate-500 flex items-center gap-1">
+                      <Banknote className="w-3 h-3 text-slate-400" />
+                      <span>Kasir:</span>
+                    </span>
+
+                    <button
+                      type="button"
+                      onClick={() => setPoPaymentFilter("ALL")}
+                      className={`px-2 py-0.5 rounded-md text-xs font-semibold transition cursor-pointer ${
+                        poPaymentFilter === "ALL"
+                          ? "bg-slate-900 text-white shadow-xs"
+                          : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-100"
+                      }`}
+                    >
+                      Semua
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setPoPaymentFilter("UNPAID")}
+                      className={`px-2 py-0.5 rounded-md text-xs font-semibold transition cursor-pointer flex items-center gap-1 ${
+                        poPaymentFilter === "UNPAID"
+                          ? "bg-rose-600 text-white shadow-xs"
+                          : "bg-white text-rose-700 border border-rose-200 hover:bg-rose-50"
+                      }`}
+                    >
+                      <span>🔴 Belum Lunas ({initialData.stats.unpaidCount || 0})</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setPoPaymentFilter("PAID")}
+                      className={`px-2 py-0.5 rounded-md text-xs font-semibold transition cursor-pointer flex items-center gap-1 ${
+                        poPaymentFilter === "PAID"
+                          ? "bg-emerald-600 text-white shadow-xs"
+                          : "bg-white text-emerald-800 border border-emerald-200 hover:bg-emerald-50"
+                      }`}
+                    >
+                      <span>🟢 Lunas ({initialData.stats.paidCount || 0})</span>
                     </button>
                   </div>
 
@@ -1282,8 +1541,16 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                       )}
                       {poStatusFilter !== "ALL" && (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-200 text-slate-800 rounded-md font-medium text-[10px]">
-                          Status: {poStatusFilter === "RECEIVED" ? "Sudah Diterima" : "Menunggu Tiba"}
+                          Gudang: {poStatusFilter === "RECEIVED" ? "Sudah Diterima" : "Menunggu Tiba"}
                           <button type="button" onClick={() => setPoStatusFilter("ALL")} className="hover:text-slate-950 cursor-pointer">
+                            <X className="w-3 h-3" />
+                          </button>
+                        </span>
+                      )}
+                      {poPaymentFilter !== "ALL" && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-900 rounded-md font-medium text-[10px]">
+                          Kasir: {poPaymentFilter === "PAID" ? "Lunas" : "Belum Lunas"}
+                          <button type="button" onClick={() => setPoPaymentFilter("ALL")} className="hover:text-amber-950 cursor-pointer">
                             <X className="w-3 h-3" />
                           </button>
                         </span>
@@ -1323,21 +1590,38 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                   </div>
                 ) : (
                   filteredPurchaseOrders.map((po: any) => (
-                    <div key={po.id} className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/50 flex items-center justify-between gap-3 hover:bg-slate-100/60 transition">
+                    <div key={po.id} className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-100/60 transition">
                       <div className="flex items-center gap-3">
                         <div className="p-2 bg-emerald-100 text-emerald-800 rounded-lg font-mono font-bold text-xs">
                           {po.poNumber}
                         </div>
                         <div>
-                          <p className="text-xs font-bold text-slate-900">{po.supplierName}</p>
-                          <p className="text-[10px] text-slate-500">
+                          <div className="flex items-center gap-2">
+                            <p className="text-xs font-bold text-slate-900">{po.supplierName}</p>
+                            {/* Badges Pembayaran */}
+                            {po.paymentStatus === "PAID" ? (
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-0.5">
+                                <Check className="w-3 h-3 text-emerald-600" />
+                                <span>Lunas</span>
+                              </span>
+                            ) : po.paymentStatus === "PARTIAL" ? (
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300">
+                                🟡 DP: {formatRupiah(po.paidAmount || 0)}
+                              </span>
+                            ) : (
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200">
+                                🔴 Belum Bayar ({po.paymentTerms || "Tempo 30 Hari"})
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[10px] text-slate-500 mt-0.5">
                             {po.items.length} Barang • Diterbitkan {formatDate(po.createdAt)} oleh {po.createdBy}
                           </p>
                         </div>
                       </div>
 
-                      <div className="text-right flex items-center gap-3">
-                        <div>
+                      <div className="flex items-center justify-between sm:justify-end gap-3 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-200/60">
+                        <div className="text-left sm:text-right">
                           <p className="text-xs font-black text-slate-900">{formatRupiah(po.totalAmount)}</p>
                           <span
                             className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full ${
@@ -1347,14 +1631,41 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                             {po.status === "RECEIVED" ? "✓ Diterima Gudang" : "⏳ Menunggu Gudang"}
                           </span>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => setPreviewPoModal(po)}
-                          className="p-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-xs cursor-pointer"
-                          title="Lihat / Cetak PO"
-                        >
-                          <FileText className="w-4 h-4" />
-                        </button>
+
+                        {/* Action Buttons */}
+                        <div className="flex items-center gap-1.5">
+                          {/* Tombol Kirim WhatsApp */}
+                          <button
+                            type="button"
+                            onClick={() => handleSendPoWhatsApp(po)}
+                            className="p-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs cursor-pointer flex items-center gap-1 transition"
+                            title="Kirim Format PO Resmi ke WhatsApp Sales Vendor"
+                          >
+                            <MessageCircle className="w-3.5 h-3.5 text-emerald-600" />
+                            <span className="text-[10px] font-bold">WA</span>
+                          </button>
+
+                          {/* Tombol Catat Pembayaran */}
+                          <button
+                            type="button"
+                            onClick={() => handleOpenPaymentModal(po)}
+                            className="p-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs cursor-pointer flex items-center gap-1 transition"
+                            title="Pencatatan Kasir & Pembayaran PO"
+                          >
+                            <CreditCard className="w-3.5 h-3.5 text-blue-600" />
+                            <span className="text-[10px] font-bold">Bayar</span>
+                          </button>
+
+                          {/* Tombol Lihat Surat PO */}
+                          <button
+                            type="button"
+                            onClick={() => setPreviewPoModal(po)}
+                            className="p-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-xs cursor-pointer"
+                            title="Lihat / Cetak Surat PO"
+                          >
+                            <FileText className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ))
@@ -1486,6 +1797,47 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                     <CheckCircle2 className="w-3 h-3" />
                     <span>Diterima Gudang ({receivedPoCount})</span>
                   </button>
+
+                  <span className="h-4 w-px bg-slate-300 mx-1 hidden sm:inline-block" />
+
+                  {/* Filter Status Finansial / Kasir */}
+                  <button
+                    type="button"
+                    onClick={() => setPoPaymentFilter("ALL")}
+                    className={`px-2.5 py-1 rounded-md text-xs font-semibold transition cursor-pointer ${
+                      poPaymentFilter === "ALL"
+                        ? "bg-slate-800 text-white shadow-xs"
+                        : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-100"
+                    }`}
+                  >
+                    Semua Bayar
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setPoPaymentFilter("UNPAID")}
+                    className={`px-2.5 py-1 rounded-md text-xs font-semibold transition cursor-pointer flex items-center gap-1 ${
+                      poPaymentFilter === "UNPAID"
+                        ? "bg-rose-600 text-white shadow-xs"
+                        : "bg-white text-rose-700 border border-rose-200 hover:bg-rose-50"
+                    }`}
+                  >
+                    <Wallet className="w-3 h-3" />
+                    <span>🔴 Belum Lunas ({initialData.stats.unpaidCount || 0})</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setPoPaymentFilter("PAID")}
+                    className={`px-2.5 py-1 rounded-md text-xs font-semibold transition cursor-pointer flex items-center gap-1 ${
+                      poPaymentFilter === "PAID"
+                        ? "bg-emerald-600 text-white shadow-xs"
+                        : "bg-white text-emerald-700 border border-emerald-200 hover:bg-emerald-50"
+                    }`}
+                  >
+                    <Banknote className="w-3 h-3" />
+                    <span>🟢 Lunas ({initialData.stats.paidCount || 0})</span>
+                  </button>
                 </div>
 
                 {/* Active Filter Tags */}
@@ -1544,14 +1896,15 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                     <th className="p-3">Vendor / Pemasok</th>
                     <th className="p-3">Daftar Barang</th>
                     <th className="p-3 text-right">Total Tagihan</th>
-                    <th className="p-3 text-center">Status Kedatangan Gudang</th>
-                    <th className="p-3 text-center">Aksi</th>
+                    <th className="p-3 text-center">Status Gudang</th>
+                    <th className="p-3 text-center">Status Pembayaran (Kasir)</th>
+                    <th className="p-3 text-center">Aksi Cepat</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {filteredPurchaseOrders.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="text-center py-10 px-4">
+                      <td colSpan={7} className="text-center py-10 px-4">
                         <Filter className="w-8 h-8 text-slate-300 mx-auto mb-2" />
                         <p className="text-xs font-bold text-slate-700">Tidak ada Purchase Order yang cocok</p>
                         <p className="text-[11px] text-slate-500 max-w-md mx-auto mt-0.5">
@@ -1600,7 +1953,7 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                           <div className="inline-flex flex-col items-center">
                             <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
                               <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                              <span>Sudah Sampai di Gudang</span>
+                              <span>Sudah di Gudang</span>
                             </span>
                             <span className="text-[10px] text-slate-600 font-semibold mt-0.5">
                               🏢 {po.receivedWarehouse || "Gudang Utama"}
@@ -1620,25 +1973,94 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                         )}
                       </td>
                       <td className="p-3 text-center">
-                        <div className="flex items-center justify-center gap-1.5">
+                        {po.paymentStatus === "PAID" ? (
+                          <div className="inline-flex flex-col items-center">
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
+                              <Check className="w-3 h-3 text-emerald-600" />
+                              <span>LUNAS (PAID)</span>
+                            </span>
+                            <span className="text-[10px] text-slate-500 mt-0.5 font-medium">
+                              {po.paymentMethod === "TRANSFER_BANK"
+                                ? "Transfer Bank"
+                                : po.paymentMethod === "CASH"
+                                ? "Kas / Tunai"
+                                : po.paymentMethod || "Lunas"}
+                            </span>
+                          </div>
+                        ) : po.paymentStatus === "PARTIAL" ? (
+                          <div className="inline-flex flex-col items-center">
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300">
+                              <Receipt className="w-3 h-3 text-amber-600" />
+                              <span>DP / SEBAGIAN</span>
+                            </span>
+                            <span className="text-[10px] text-emerald-700 font-semibold mt-0.5">
+                              Dibayar: {formatRupiah(po.paidAmount || 0)}
+                            </span>
+                            <span className="text-[9px] text-rose-600 font-medium">
+                              Sisa: {formatRupiah(Math.max(0, (po.totalAmount || 0) - (po.paidAmount || 0)))}
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="inline-flex flex-col items-center">
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-300">
+                              <Wallet className="w-3 h-3 text-rose-600" />
+                              <span>BELUM BAYAR</span>
+                            </span>
+                            <span className="text-[10px] text-slate-500 mt-0.5 font-medium">
+                              {po.paymentTerms === "TEMPO_30"
+                                ? "Tempo 30 Hari"
+                                : po.paymentTerms === "TEMPO_60"
+                                ? "Tempo 60 Hari"
+                                : po.paymentTerms === "COD"
+                                ? "COD (Saat Tiba)"
+                                : po.paymentTerms === "CASH"
+                                ? "Tunai Dimuka"
+                                : po.paymentTerms || "Net 30"}
+                            </span>
+                          </div>
+                        )}
+                      </td>
+                      <td className="p-3 text-center">
+                        <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={() => handleSendPoWhatsApp(po)}
+                            className="bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-700 border border-emerald-200 px-2 py-1 rounded-lg text-xs font-semibold cursor-pointer inline-flex items-center gap-1 transition shadow-2xs"
+                            title="Kirim PO ke WhatsApp Vendor"
+                          >
+                            <MessageCircle className="w-3.5 h-3.5" />
+                            <span>WA</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenPaymentModal(po)}
+                            className={`px-2 py-1 rounded-lg text-xs font-semibold cursor-pointer inline-flex items-center gap-1 transition ${
+                              po.paymentStatus === "PAID"
+                                ? "bg-slate-100 hover:bg-slate-200 text-slate-700"
+                                : "bg-rose-50 hover:bg-rose-600 hover:text-white text-rose-700 border border-rose-200 shadow-2xs"
+                            }`}
+                            title="Catat / Ubah Status Pembayaran Kasir"
+                          >
+                            <Banknote className="w-3.5 h-3.5" />
+                            <span>{po.paymentStatus === "PAID" ? "Kasir" : "Bayar"}</span>
+                          </button>
                           <button
                             type="button"
                             onClick={() => setPreviewPoModal(po)}
-                            className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold cursor-pointer inline-flex items-center gap-1 transition"
+                            className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-2 py-1 rounded-lg text-xs font-semibold cursor-pointer inline-flex items-center gap-1 transition"
                             title="Lihat Surat Purchase Order"
                           >
                             <FileText className="w-3.5 h-3.5" />
-                            <span>Lihat PO</span>
+                            <span>PO</span>
                           </button>
                           {po.status === "RECEIVED" && (
                             <button
                               type="button"
                               onClick={() => setSelectedDeliveryProof(po)}
-                              className="bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1.5 rounded-lg text-xs font-semibold cursor-pointer inline-flex items-center gap-1 shadow-xs transition"
+                              className="bg-emerald-600 hover:bg-emerald-700 text-white px-2 py-1 rounded-lg text-xs font-semibold cursor-pointer inline-flex items-center gap-1 shadow-xs transition"
                               title="Lihat Bukti Foto & Waktu Kedatangan dari Gudang"
                             >
                               <Truck className="w-3.5 h-3.5" />
-                              <span>Bukti Kedatangan</span>
                             </button>
                           )}
                         </div>
@@ -2028,161 +2450,186 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                 </div>
               </div>
 
-              {/* BAGIAN 2: RINCIAN BARANG YANG DIPESAN */}
+              {/* BAGIAN 2: KERANJANG MULTI-BARANG YANG DIPESAN */}
               <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2 text-xs font-bold text-slate-800">
                     <Package className="w-4 h-4 text-emerald-600" />
-                    <span>Rincian Barang yang Dipesan</span>
+                    <span>Daftar Barang yang Dipesan (Multi-Item Keranjang)</span>
                   </div>
-                  <span className="text-[10px] text-slate-500 bg-white border border-slate-200 px-2 py-0.5 rounded-full font-medium">
-                    Katalog Gudang &amp; Input Bebas
+                  <span className="text-[10px] text-emerald-800 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded-full font-bold">
+                    {newPoForm.items.length} Jenis Barang
                   </span>
                 </div>
 
-                {/* Kolom Nama Barang */}
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Kolom Nama Barang yang Dipesan *
-                  </label>
-                  <div className="relative">
-                    <Package className="w-4 h-4 absolute left-3 top-2.5 text-slate-400 pointer-events-none" />
-                    <input
-                      type="text"
-                      required
-                      list="gudang-products-datalist"
-                      placeholder="Ketik atau pilih nama barang (contoh: Laptop ThinkPad T14, Biji Plastik HDPE...)"
-                      value={newPoForm.productName}
-                      onChange={(e) => handleProductNameChangeInNewPo(e.target.value)}
-                      className="w-full bg-white border border-slate-200 rounded-lg pl-9 pr-3 py-2 text-xs sm:text-sm outline-none focus:border-emerald-500 font-medium"
-                    />
-                    <datalist id="gudang-products-datalist">
-                      {initialData.gudangIntegration.products.map((p: any) => (
-                        <option key={p.id} value={p.name}>
-                          Satuan: {p.unit} • Total Stok: {p.totalStock}
-                        </option>
-                      ))}
-                    </datalist>
-                  </div>
-
-                  {/* Indikator Jika Barang Terhubung dengan Katalog Gudang */}
-                  {productMatch && (
-                    <div className="mt-1.5 p-2 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center justify-between text-emerald-800 text-[11px] animate-fadeIn">
-                      <div className="flex items-center gap-1.5">
-                        <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                        <span>
-                          <strong>Terhubung dengan Katalog Gudang:</strong> Total Stok: {productMatch.totalStock} {productMatch.unit} (Min: {productMatch.minStock})
+                <div className="space-y-2.5">
+                  {newPoForm.items.map((it, idx) => (
+                    <div
+                      key={it.id || idx}
+                      className="p-3 bg-white border border-slate-200 rounded-xl shadow-xs space-y-2"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-700 flex items-center gap-1.5">
+                          <span className="w-5 h-5 rounded-full bg-slate-100 text-slate-700 flex items-center justify-center text-[10px] font-bold">
+                            {idx + 1}
+                          </span>
+                          <span>Barang #{idx + 1}</span>
                         </span>
-                      </div>
-                      <span className="bg-emerald-200/70 text-emerald-900 font-bold px-2 py-0.5 rounded text-[10px]">
-                        Satuan: {productMatch.unit}
-                      </span>
-                    </div>
-                  )}
-
-                  {/* Rekomendasi Barang jika sebagian nama cocok */}
-                  {productSuggestions.length > 0 && (
-                    <div className="mt-1.5 p-2 bg-emerald-50/80 border border-emerald-200 rounded-lg text-xs space-y-1">
-                      <span className="text-[11px] font-semibold text-emerald-800 flex items-center gap-1">
-                        <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
-                        Barang dari katalog gudang yang cocok:
-                      </span>
-                      <div className="flex flex-wrap gap-1.5">
-                        {productSuggestions.map((p: any) => (
+                        {newPoForm.items.length > 1 && (
                           <button
-                            key={p.id}
                             type="button"
-                            onClick={() => applyProductToNewPo(p)}
-                            className="text-[11px] bg-white border border-emerald-300 hover:bg-emerald-600 hover:text-white text-emerald-700 px-2.5 py-1 rounded-md transition font-medium cursor-pointer shadow-xs flex items-center gap-1"
+                            onClick={() => removeItemRow(idx)}
+                            className="text-rose-500 hover:text-rose-700 hover:bg-rose-50 p-1 rounded-md transition cursor-pointer text-xs flex items-center gap-1"
+                            title="Hapus baris barang ini"
                           >
-                            <span>⚡ Pilih: {p.name} ({p.unit})</span>
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span className="text-[10px]">Hapus</span>
                           </button>
-                        ))}
+                        )}
+                      </div>
+
+                      {/* Input Nama Barang */}
+                      <div>
+                        <div className="relative">
+                          <Package className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-slate-400 pointer-events-none" />
+                          <input
+                            type="text"
+                            required
+                            list="gudang-products-datalist"
+                            placeholder="Ketik atau pilih nama barang (contoh: Laptop ThinkPad T14, Kabel Tembaga...)"
+                            value={it.productName}
+                            onChange={(e) => updateItemRow(idx, "productName", e.target.value)}
+                            className="w-full bg-slate-50/60 border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-xs outline-none focus:border-emerald-500 focus:bg-white font-medium"
+                          />
+                        </div>
+
+                        {/* Chips Cepat dari Katalog Gudang */}
+                        {initialData.gudangIntegration.products.length > 0 && !it.productName && (
+                          <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-slate-400">
+                            <span>Katalog Gudang:</span>
+                            {initialData.gudangIntegration.products.slice(0, 3).map((p: any) => (
+                              <button
+                                key={p.id}
+                                type="button"
+                                onClick={() => handleSelectProductForItem(idx, p)}
+                                className="bg-slate-100 hover:bg-emerald-50 hover:text-emerald-700 border border-slate-200 px-1.5 py-0.5 rounded text-[10px] transition cursor-pointer"
+                              >
+                                + {p.name}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Satuan, Qty, Harga Satuan, dan Subtotal */}
+                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 text-xs">
+                        <div className="sm:col-span-3">
+                          <label className="block text-[10px] text-slate-500 mb-0.5 font-medium">Satuan</label>
+                          <input
+                            type="text"
+                            list="purchasing-units-datalist"
+                            required
+                            placeholder="unit, pcs..."
+                            value={it.unit}
+                            onChange={(e) => updateItemRow(idx, "unit", e.target.value)}
+                            className="w-full bg-slate-50/60 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs outline-none focus:border-emerald-500 focus:bg-white font-medium"
+                          />
+                        </div>
+
+                        <div className="sm:col-span-3">
+                          <label className="block text-[10px] text-slate-500 mb-0.5 font-medium">Jumlah (Qty)</label>
+                          <input
+                            type="number"
+                            min="1"
+                            required
+                            value={it.quantity}
+                            onChange={(e) => updateItemRow(idx, "quantity", Number(e.target.value))}
+                            className="w-full bg-slate-50/60 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs outline-none focus:border-emerald-500 focus:bg-white font-bold"
+                          />
+                        </div>
+
+                        <div className="sm:col-span-3">
+                          <label className="block text-[10px] text-slate-500 mb-0.5 font-medium">Harga Satuan (Rp)</label>
+                          <input
+                            type="number"
+                            min="0"
+                            required
+                            value={it.unitPrice}
+                            onChange={(e) => updateItemRow(idx, "unitPrice", Number(e.target.value))}
+                            className="w-full bg-slate-50/60 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs outline-none focus:border-emerald-500 focus:bg-white font-bold"
+                          />
+                        </div>
+
+                        <div className="sm:col-span-3 bg-slate-50 rounded-lg p-1.5 border border-slate-100 flex flex-col justify-center text-right">
+                          <span className="text-[9px] text-slate-400">Subtotal Baris:</span>
+                          <span className="font-bold text-slate-900 text-xs truncate">
+                            {formatRupiah((Number(it.quantity) || 0) * (Number(it.unitPrice) || 0))}
+                          </span>
+                        </div>
                       </div>
                     </div>
-                  )}
+                  ))}
 
-                  {/* Chips Katalog Gudang (Pilih Cepat) */}
-                  {initialData.gudangIntegration.products.length > 0 && !productMatch && productSuggestions.length === 0 && (
-                    <div className="mt-1.5 flex flex-wrap items-center gap-1 text-[11px] text-slate-500">
-                      <span className="text-[10px] text-slate-400">Pilih dari Gudang:</span>
-                      {initialData.gudangIntegration.products.slice(0, 4).map((p: any) => (
-                        <button
-                          key={p.id}
-                          type="button"
-                          onClick={() => applyProductToNewPo(p)}
-                          className="bg-white border border-slate-200 hover:border-emerald-400 hover:text-emerald-700 px-2 py-0.5 rounded text-[10px] font-medium transition cursor-pointer text-slate-600 truncate max-w-[180px]"
-                        >
-                          + {p.name}
-                        </button>
-                      ))}
-                    </div>
-                  )}
+                  <button
+                    type="button"
+                    onClick={addItemRow}
+                    className="w-full py-2 bg-white hover:bg-emerald-50 border border-dashed border-emerald-400 text-emerald-700 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>+ Tambah Barang Lagi ke PO Ini</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* BAGIAN 3: KETENTUAN PEMBAYARAN KASIR & TERMIN (PAYMENT TERMS) */}
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-xs font-bold text-slate-800">
+                    <CreditCard className="w-4 h-4 text-emerald-600" />
+                    <span>Ketentuan Pembayaran Kasir / Finansial</span>
+                  </div>
+                  <span className="text-[10px] text-slate-500 bg-white border border-slate-200 px-2 py-0.5 rounded-full font-medium">
+                    Termin &amp; Kasir
+                  </span>
                 </div>
 
-                {/* Kolom Satuan Barang, Jumlah Pesanan & Harga Satuan */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Satuan Barang (Unit) *
+                      Termin Pembayaran (Payment Terms) *
                     </label>
-                    <input
-                      type="text"
-                      list="purchasing-units-datalist"
-                      required
-                      placeholder="pcs, box, kg, ton..."
-                      value={newPoForm.unit}
-                      onChange={(e) => setNewPoForm({ ...newPoForm, unit: e.target.value })}
-                      className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs sm:text-sm outline-none focus:border-emerald-500 font-medium"
-                    />
-                    <datalist id="purchasing-units-datalist">
-                      <option value="pcs" />
-                      <option value="unit" />
-                      <option value="box" />
-                      <option value="roll" />
-                      <option value="meter" />
-                      <option value="kg" />
-                      <option value="ton" />
-                      <option value="zak" />
-                      <option value="liter" />
-                      <option value="dus" />
-                      <option value="pack" />
-                      <option value="set" />
-                      <option value="batang" />
-                    </datalist>
+                    <select
+                      value={newPoForm.paymentTerms}
+                      onChange={(e) => setNewPoForm({ ...newPoForm, paymentTerms: e.target.value })}
+                      className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-emerald-500 font-medium cursor-pointer"
+                    >
+                      <option value="TEMPO_30">Tempo 30 Hari (Net 30) - Standar PO</option>
+                      <option value="TEMPO_60">Tempo 60 Hari (Net 60)</option>
+                      <option value="TEMPO_14">Tempo 14 Hari (Net 14)</option>
+                      <option value="CASH">Tunai di Muka (Cash)</option>
+                      <option value="COD">Cash on Delivery (Bayar saat Barang Tiba)</option>
+                      <option value="DP_50">Uang Muka 50% (DP 50%)</option>
+                    </select>
                   </div>
 
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Jumlah Pesanan *
+                      Status Pembayaran Awal *
                     </label>
-                    <input
-                      type="number"
-                      min="1"
-                      required
-                      value={newPoForm.quantity}
-                      onChange={(e) => setNewPoForm({ ...newPoForm, quantity: Number(e.target.value) })}
-                      className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs sm:text-sm font-bold outline-none focus:border-emerald-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Harga Satuan (Rp) *
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      required
-                      value={newPoForm.unitPrice}
-                      onChange={(e) => setNewPoForm({ ...newPoForm, unitPrice: Number(e.target.value) })}
-                      className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs sm:text-sm font-bold outline-none focus:border-emerald-500"
-                    />
+                    <select
+                      value={newPoForm.paymentStatus}
+                      onChange={(e) => setNewPoForm({ ...newPoForm, paymentStatus: e.target.value as any })}
+                      className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-emerald-500 font-medium cursor-pointer"
+                    >
+                      <option value="UNPAID">🔴 Belum Dibayar (Menunggu Invoice / Jatuh Tempo)</option>
+                      <option value="PAID">🟢 Langsung Lunas Penuh (PAID)</option>
+                      <option value="PARTIAL">🟡 Pembayaran Uang Muka / DP (PARTIAL)</option>
+                    </select>
                   </div>
                 </div>
               </div>
 
-              {/* BAGIAN 3: KALKULASI BIAYA & TARIF PPN RESMI INDONESIA (pajak.go.id) */}
+              {/* BAGIAN 4: KALKULASI BIAYA & TARIF PPN RESMI INDONESIA (pajak.go.id) */}
               <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-3">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-2">
                   <div className="flex items-center gap-2 text-xs font-bold text-slate-800">
@@ -2288,12 +2735,12 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                   </div>
                 </div>
 
-                {/* Rincian Kalkulasi Pajak */}
+                {/* Rincian Kalkulasi Pajak Multi-Item */}
                 <div className="bg-white p-3 rounded-xl border border-slate-200 text-xs space-y-1.5">
                   <div className="flex justify-between text-slate-600">
-                    <span>Subtotal Barang:</span>
+                    <span>Subtotal ({newPoForm.items.length} Barang):</span>
                     <span className="font-semibold text-slate-800">
-                      {formatRupiah(newPoForm.quantity * newPoForm.unitPrice)}
+                      {formatRupiah(cartSubtotal)}
                     </span>
                   </div>
                   <div className="flex justify-between text-slate-600">
@@ -2304,25 +2751,13 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                       </span>
                     </span>
                     <span className="font-bold text-slate-800">
-                      {formatRupiah(
-                        Math.round(
-                          newPoForm.quantity *
-                            newPoForm.unitPrice *
-                            (newPoForm.taxRate / 100)
-                        )
-                      )}
+                      {formatRupiah(cartTax)}
                     </span>
                   </div>
                   <div className="flex justify-between border-t border-slate-200 pt-1.5 text-sm font-black text-emerald-700">
                     <span>Total Tagihan (Termasuk PPN):</span>
                     <span>
-                      {formatRupiah(
-                        Math.round(
-                          newPoForm.quantity *
-                            newPoForm.unitPrice *
-                            (1 + newPoForm.taxRate / 100)
-                        )
-                      )}
+                      {formatRupiah(cartTotal)}
                     </span>
                   </div>
                 </div>
@@ -2458,6 +2893,82 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
               </div>
             </div>
 
+            {/* Status Finansial & Pembayaran Kasir */}
+            <div className={`p-3.5 rounded-xl border text-xs space-y-2 ${
+              previewPoModal.paymentStatus === "PAID"
+                ? "bg-emerald-50/70 border-emerald-200"
+                : previewPoModal.paymentStatus === "PARTIAL"
+                ? "bg-amber-50/70 border-amber-200"
+                : "bg-rose-50/70 border-rose-200"
+            }`}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Banknote className="w-4 h-4 text-slate-700" />
+                  <span className="font-bold text-slate-900">STATUS PEMBAYARAN KASIR</span>
+                </div>
+                <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border ${
+                  previewPoModal.paymentStatus === "PAID"
+                    ? "bg-emerald-100 text-emerald-800 border-emerald-300"
+                    : previewPoModal.paymentStatus === "PARTIAL"
+                    ? "bg-amber-100 text-amber-800 border-amber-300"
+                    : "bg-rose-100 text-rose-800 border-rose-300"
+                }`}>
+                  {previewPoModal.paymentStatus === "PAID"
+                    ? "🟢 LUNAS (PAID)"
+                    : previewPoModal.paymentStatus === "PARTIAL"
+                    ? "🟡 UANG MUKA / DP (PARTIAL)"
+                    : "🔴 BELUM LUNAS (UNPAID)"}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] pt-1">
+                <div>
+                  <span className="text-slate-500 block text-[10px] uppercase font-bold">Termin Pembayaran:</span>
+                  <span className="font-semibold text-slate-800">
+                    {previewPoModal.paymentTerms === "TEMPO_30"
+                      ? "Tempo 30 Hari (Net 30)"
+                      : previewPoModal.paymentTerms === "TEMPO_60"
+                      ? "Tempo 60 Hari (Net 60)"
+                      : previewPoModal.paymentTerms === "COD"
+                      ? "Cash On Delivery (COD)"
+                      : previewPoModal.paymentTerms === "CASH"
+                      ? "Tunai Dimuka (Cash)"
+                      : previewPoModal.paymentTerms === "DP_50"
+                      ? "DP 50%"
+                      : previewPoModal.paymentTerms || "Net 30"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block text-[10px] uppercase font-bold">Jumlah Terbayar:</span>
+                  <span className="font-bold text-emerald-700">
+                    {formatRupiah(previewPoModal.paidAmount || 0)}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block text-[10px] uppercase font-bold">Sisa Tagihan:</span>
+                  <span className="font-bold text-rose-600">
+                    {formatRupiah(Math.max(0, (previewPoModal.totalAmount || 0) - (previewPoModal.paidAmount || 0)))}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block text-[10px] uppercase font-bold">Metode Bayar:</span>
+                  <span className="font-medium text-slate-700">
+                    {previewPoModal.paymentMethod === "TRANSFER_BANK"
+                      ? "Transfer Bank"
+                      : previewPoModal.paymentMethod === "CASH"
+                      ? "Tunai Kasir"
+                      : previewPoModal.paymentMethod || "-"}
+                  </span>
+                </div>
+              </div>
+
+              {previewPoModal.paymentNotes && (
+                <div className="pt-1.5 border-t border-slate-200/60 text-[11px] text-slate-600">
+                  <span className="font-semibold">Catatan Kasir:</span> {previewPoModal.paymentNotes}
+                </div>
+              )}
+            </div>
+
             {/* Status Penerimaan di Gudang */}
             {previewPoModal.status === "RECEIVED" ? (
               <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3.5 space-y-2 text-xs">
@@ -2520,19 +3031,261 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
               </div>
             )}
 
-            <div className="pt-4 border-t border-slate-100 flex items-center justify-between">
+            <div className="pt-4 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3">
               <span className="text-[11px] text-slate-400">
                 Diterbitkan secara sah oleh: <b>{previewPoModal.createdBy}</b>
               </span>
-              <button
-                type="button"
-                onClick={() => window.print()}
-                className="bg-slate-900 hover:bg-black text-white px-4 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
-              >
-                <Printer className="w-4 h-4" />
-                <span>Cetak Purchase Order</span>
-              </button>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => handleSendPoWhatsApp(previewPoModal)}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
+                  title="Kirim PO ke WhatsApp Vendor"
+                >
+                  <MessageCircle className="w-4 h-4" />
+                  <span>Kirim via WhatsApp</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleOpenPaymentModal(previewPoModal);
+                  }}
+                  className="bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-300 px-3 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+                  title="Catat atau Ubah Pembayaran Kasir"
+                >
+                  <Banknote className="w-4 h-4 text-rose-600" />
+                  <span>Catat Pembayaran</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="bg-slate-900 hover:bg-black text-white px-3.5 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Printer className="w-4 h-4" />
+                  <span>Cetak PO</span>
+                </button>
+              </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 6: CATAT PEMBAYARAN KASIR & STATUS FINANSIAL PO */}
+      {paymentModalPo && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto space-y-4">
+            <button
+              type="button"
+              onClick={() => setPaymentModalPo(null)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="border-b border-slate-100 pb-3 flex items-start gap-3">
+              <div className="p-3 bg-rose-100 text-rose-700 rounded-2xl">
+                <Receipt className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-900 text-base">Catat Pembayaran Kasir (Finansial)</h3>
+                <p className="text-xs text-slate-500">
+                  Update status pembayaran untuk PO <span className="font-mono font-bold text-slate-700">{paymentModalPo.poNumber}</span>
+                </p>
+              </div>
+            </div>
+
+            {/* Ringkasan PO */}
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2 text-xs">
+              <div className="flex justify-between text-slate-600">
+                <span>Vendor / Pemasok:</span>
+                <span className="font-bold text-slate-900">{paymentModalPo.supplierName}</span>
+              </div>
+              <div className="flex justify-between text-slate-600">
+                <span>Total Nilai PO (Termasuk PPN):</span>
+                <span className="font-black text-emerald-700 text-sm">{formatRupiah(paymentModalPo.totalAmount)}</span>
+              </div>
+              <div className="flex justify-between text-slate-600 border-t border-slate-200 pt-1.5">
+                <span>Sudah Dibayar Sebelumnya:</span>
+                <span className="font-semibold text-slate-800">{formatRupiah(paymentModalPo.paidAmount || 0)}</span>
+              </div>
+              <div className="flex justify-between text-slate-600">
+                <span>Sisa Tagihan Saat Ini:</span>
+                <span className="font-bold text-rose-600">
+                  {formatRupiah(Math.max(0, (paymentModalPo.totalAmount || 0) - (paymentModalPo.paidAmount || 0)))}
+                </span>
+              </div>
+            </div>
+
+            <form onSubmit={handleSavePayment} className="space-y-3.5 text-xs">
+              {/* Pilihan Status Pembayaran */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Status Pembayaran Baru *</label>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPaymentForm({
+                        ...paymentForm,
+                        paymentStatus: "PAID",
+                        paidAmount: paymentModalPo.totalAmount,
+                      });
+                    }}
+                    className={`p-2.5 rounded-xl border text-center transition cursor-pointer ${
+                      paymentForm.paymentStatus === "PAID"
+                        ? "bg-emerald-50 border-emerald-500 ring-2 ring-emerald-500/20 text-emerald-900 font-bold"
+                        : "bg-white border-slate-200 hover:bg-slate-50 text-slate-700"
+                    }`}
+                  >
+                    <Check className="w-4 h-4 mx-auto mb-1 text-emerald-600" />
+                    <span>Lunas Penuh</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPaymentForm({
+                        ...paymentForm,
+                        paymentStatus: "PARTIAL",
+                        paidAmount: Math.round(paymentModalPo.totalAmount * 0.5),
+                      });
+                    }}
+                    className={`p-2.5 rounded-xl border text-center transition cursor-pointer ${
+                      paymentForm.paymentStatus === "PARTIAL"
+                        ? "bg-amber-50 border-amber-500 ring-2 ring-amber-500/20 text-amber-900 font-bold"
+                        : "bg-white border-slate-200 hover:bg-slate-50 text-slate-700"
+                    }`}
+                  >
+                    <Receipt className="w-4 h-4 mx-auto mb-1 text-amber-600" />
+                    <span>DP / Sebagian</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPaymentForm({
+                        ...paymentForm,
+                        paymentStatus: "UNPAID",
+                        paidAmount: 0,
+                      });
+                    }}
+                    className={`p-2.5 rounded-xl border text-center transition cursor-pointer ${
+                      paymentForm.paymentStatus === "UNPAID"
+                        ? "bg-rose-50 border-rose-500 ring-2 ring-rose-500/20 text-rose-900 font-bold"
+                        : "bg-white border-slate-200 hover:bg-slate-50 text-slate-700"
+                    }`}
+                  >
+                    <Wallet className="w-4 h-4 mx-auto mb-1 text-rose-600" />
+                    <span>Belum Lunas</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Jumlah yang Dibayar */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-bold text-slate-700">Jumlah Terbayar (Rp) *</label>
+                  <button
+                    type="button"
+                    onClick={() => setPaymentForm({ ...paymentForm, paidAmount: paymentModalPo.totalAmount })}
+                    className="text-[10px] text-emerald-700 hover:underline font-bold cursor-pointer"
+                  >
+                    Set Lunas Penuh ({formatRupiah(paymentModalPo.totalAmount)})
+                  </button>
+                </div>
+                <div className="relative">
+                  <Banknote className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
+                  <input
+                    type="number"
+                    min="0"
+                    max={paymentModalPo.totalAmount}
+                    required
+                    value={paymentForm.paidAmount}
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      let newStatus: "PAID" | "PARTIAL" | "UNPAID" = paymentForm.paymentStatus;
+                      if (val >= paymentModalPo.totalAmount) {
+                        newStatus = "PAID";
+                      } else if (val > 0) {
+                        newStatus = "PARTIAL";
+                      } else {
+                        newStatus = "UNPAID";
+                      }
+                      setPaymentForm({ ...paymentForm, paidAmount: val, paymentStatus: newStatus });
+                    }}
+                    className="w-full bg-white border border-slate-200 rounded-lg pl-9 pr-3 py-2 text-xs font-bold text-slate-900 outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <div className="flex justify-between text-[11px] text-slate-500 mt-1">
+                  <span>Sisa Hutang Setelah Pembayaran Ini:</span>
+                  <span className="font-bold text-rose-600">
+                    {formatRupiah(Math.max(0, paymentModalPo.totalAmount - (Number(paymentForm.paidAmount) || 0)))}
+                  </span>
+                </div>
+              </div>
+
+              {/* Metode Pembayaran & Termin */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Metode Pembayaran *</label>
+                  <select
+                    value={paymentForm.paymentMethod}
+                    onChange={(e) => setPaymentForm({ ...paymentForm, paymentMethod: e.target.value })}
+                    className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-emerald-500 font-medium cursor-pointer"
+                  >
+                    <option value="TRANSFER_BANK">Transfer Bank (BCA / Mandiri / BRI / BNI)</option>
+                    <option value="CASH">Kas Kecil / Tunai (Petty Cash)</option>
+                    <option value="GIRO">Giro / Cek Perusahaan</option>
+                    <option value="KREDIT_PERUSAHAAN">Kartu Kredit Perusahaan</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Termin Pembayaran *</label>
+                  <select
+                    value={paymentForm.paymentTerms}
+                    onChange={(e) => setPaymentForm({ ...paymentForm, paymentTerms: e.target.value })}
+                    className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-emerald-500 font-medium cursor-pointer"
+                  >
+                    <option value="TEMPO_30">Tempo 30 Hari (Net 30)</option>
+                    <option value="TEMPO_60">Tempo 60 Hari (Net 60)</option>
+                    <option value="TEMPO_14">Tempo 14 Hari (Net 14)</option>
+                    <option value="CASH">Tunai Dimuka (Cash)</option>
+                    <option value="COD">Cash on Delivery (COD)</option>
+                    <option value="DP_50">Uang Muka 50% (DP 50%)</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Catatan / No Referensi Transfer */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Nomor Referensi Transfer / Catatan Kasir</label>
+                <input
+                  type="text"
+                  placeholder="Contoh: No Ref BCA-892314, dibayar via rekening giro operasional"
+                  value={paymentForm.paymentNotes}
+                  onChange={(e) => setPaymentForm({ ...paymentForm, paymentNotes: e.target.value })}
+                  className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-emerald-500 font-medium"
+                />
+              </div>
+
+              <div className="pt-2 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPaymentModalPo(null)}
+                  className="px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingPayment}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-md transition cursor-pointer flex items-center gap-1.5"
+                >
+                  {isSubmittingPayment ? <RefreshCw className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                  <span>Simpan Status Pembayaran</span>
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
