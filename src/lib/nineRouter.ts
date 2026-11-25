@@ -274,14 +274,19 @@ export async function sendNineRouterChat(params: {
     };
   }
 
-  let outboundMessages: Array<{ role: string; content: string }> = [];
+  const outboundMessages: Array<{ role: string; content: string }> = [];
   if (Array.isArray(params.messages) && params.messages.length > 0) {
-    outboundMessages = params.messages
+    const cleaned = params.messages
       .filter((m) => m && typeof m.content === "string" && m.content.trim())
       .map((m) => ({
         role: m.role || "user",
         content: m.content,
       }));
+    const hasSystem = cleaned.some((m) => m.role === "system");
+    if (!hasSystem && params.systemPrompt?.trim()) {
+      outboundMessages.push({ role: "system", content: params.systemPrompt.trim() });
+    }
+    outboundMessages.push(...cleaned);
   } else if (params.prompt?.trim()) {
     if (params.systemPrompt?.trim()) {
       outboundMessages.push({ role: "system", content: params.systemPrompt.trim() });
@@ -305,7 +310,8 @@ export async function sendNineRouterChat(params: {
       apiKey: apiKey || undefined,
       persistStatus: false,
     });
-    selectedModel = probe.models[0]?.id || "auto";
+    const freeModel = probe.models.find((m) => m.id.startsWith("oc/") && m.id.endsWith("-free"));
+    selectedModel = freeModel?.id || probe.models[0]?.id || "auto";
   }
 
   const headers: Record<string, string> = {
@@ -345,13 +351,16 @@ export async function sendNineRouterChat(params: {
         (typeof data?.error === "object" ? data.error?.message : data?.error) ||
         data?.message ||
         `HTTP ${res.status} dari 9Router`;
+      const isAuthErr = res.status === 401 || /api key/i.test(String(upstreamError));
       return {
         success: false,
         statusCode: res.status,
         model: selectedModel,
         gatewayUrl: apiV1Url,
         error: String(upstreamError),
-        hint: `Pastikan provider/akun model "${selectedModel}" sudah terhubung dan aktif di Dashboard 9Router (${rootUrl}).`,
+        hint: isAuthErr
+          ? `9Router meminta API Key. Buka Dashboard 9Router (${rootUrl}) → menu Keys untuk membuat API Key lalu simpan di pengaturan 9Router AI.`
+          : `Pastikan provider/akun model "${selectedModel}" sudah terhubung dan aktif di Dashboard 9Router (${rootUrl}).`,
       };
     }
 

@@ -73,6 +73,7 @@ import {
 } from "lucide-react";
 import LocationMapEmbed from "./LocationMapEmbed";
 import NineRouterModal from "./NineRouterModal";
+import NineRouterChatbot from "./NineRouterChatbot";
 
 export interface CurrentStaff {
   id: string;
@@ -227,6 +228,32 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
       })
       .catch(() => {});
   }, []);
+
+  // Ringkasan konteks live Purchasing untuk Chatbot AI 9Router
+  const chatbotContextSummary = useMemo(() => {
+    const posSummary = (initialData?.purchaseOrders || [])
+      .slice(0, 15)
+      .map(
+        (po: any) =>
+          `- ${po.poNumber} | Vendor: ${po.supplierName} | Total: Rp ${Number(po.totalAmount || 0).toLocaleString("id-ID")} | Status Gudang: ${po.status} | Bayar: ${po.paymentStatus}`
+      )
+      .join("\n");
+    const priceSummary = (initialData?.vendorPrices || [])
+      .slice(0, 20)
+      .map(
+        (vp: any) =>
+          `- ${vp.productName}: Rp ${Number(vp.unitPrice || 0).toLocaleString("id-ID")}/${vp.unit} dari ${vp.vendorName}${vp.isBestPrice ? " [TERMURAH]" : ""}`
+      )
+      .join("\n");
+
+    return [
+      `Statistik Purchasing: ${initialData?.stats?.totalPOs || 0} PO, Total Belanja Rp ${Number(initialData?.stats?.totalSpending || 0).toLocaleString("id-ID")}, Belum Lunas: ${initialData?.stats?.unpaidCount || 0}, Stok Kritis Gudang: ${initialData?.stats?.lowStockGudangCount || 0}, PR Pending: ${initialData?.stats?.pendingPRsGudangCount || 0}`,
+      posSummary ? `Daftar Purchase Order Terbaru:\n${posSummary}` : "",
+      priceSummary ? `Katalog Harga Vendor:\n${priceSummary}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }, [initialData]);
 
   // Form State Buat PO Baru (Mendukung Multi-Item Keranjang)
   interface NewPoFormState {
@@ -6829,6 +6856,20 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
         onSaveConfigAction={saveNineRouterConfig}
         onTestConnectionAction={testNineRouterConnection}
         onToast={showMessage}
+      />
+
+      {/* CHATBOT AI TERHUBUNG KE 9ROUTER (POJOK KANAN BAWAH) */}
+      <NineRouterChatbot
+        projectLabel="Purchasing"
+        isConnected={nineRouterStatus.connected}
+        defaultModel={initialData?.nineRouterConfig?.defaultModel}
+        contextSummary={chatbotContextSummary}
+        quickPrompts={[
+          "Vendor mana saja yang menawarkan harga bahan baku termurah?",
+          "PO mana saja yang status pembayarannya belum lunas?",
+          "Buatkan ringkasan aktivitas pengadaan dan PR dari gudang.",
+        ]}
+        onOpenSettings={() => setShowNineRouterModal(true)}
       />
     </div>
   );
