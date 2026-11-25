@@ -27,6 +27,7 @@ import {
   getRawNineRouterConfig,
   normalizeNineRouterUrls,
 } from "@/lib/nineRouter";
+import { DEFAULT_PURCHASING_PREFS, parsePurchasingPrefs } from "@/lib/dashboardPrefs";
 
 // 1. Autentikasi Menggunakan Nomor ID Card Karyawan Purchasing
 export async function loginStaffWithIdCard(idCard: string) {
@@ -71,6 +72,7 @@ export async function loginStaffWithIdCard(idCard: string) {
       telegramChatId: staff.telegramChatId,
       telegramUsername: staff.telegramUsername,
       telegramEnabled: staff.telegramEnabled,
+      dashboardConfigJson: staff.dashboardConfigJson || null,
     },
   };
 }
@@ -1322,4 +1324,59 @@ export async function testNineRouterConnection(data?: {
     apiKey: data?.apiKey,
     persistStatus: !data?.baseUrl,
   });
+}
+
+// 11. Personalisasi & Restore Default Dashboard Khusus Per Staf (Berdasarkan ID Card)
+export async function saveStaffDashboardPrefs(idCard: string, prefsJson: string) {
+  try {
+    const cleanId = idCard.trim().toUpperCase();
+    const staff = await prisma.purchasingStaff.findFirst({ where: { idCard: cleanId } });
+    if (!staff) {
+      return { success: false, error: `Staf dengan ID Card "${idCard}" tidak ditemukan.` };
+    }
+    const normalized = parsePurchasingPrefs(prefsJson);
+    const serialized = JSON.stringify(normalized);
+    await prisma.purchasingStaff.update({
+      where: { id: staff.id },
+      data: { dashboardConfigJson: serialized },
+    });
+    revalidatePath("/");
+    return {
+      success: true,
+      message: `Tampilan dashboard khusus akun ${staff.name} (${cleanId}) berhasil disimpan!`,
+      dashboardConfigJson: serialized,
+      prefs: normalized,
+    };
+  } catch (err: unknown) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : "Gagal menyimpan preferensi tampilan.",
+    };
+  }
+}
+
+export async function resetStaffDashboardPrefs(idCard: string) {
+  try {
+    const cleanId = idCard.trim().toUpperCase();
+    const staff = await prisma.purchasingStaff.findFirst({ where: { idCard: cleanId } });
+    if (!staff) {
+      return { success: false, error: `Staf dengan ID Card "${idCard}" tidak ditemukan.` };
+    }
+    await prisma.purchasingStaff.update({
+      where: { id: staff.id },
+      data: { dashboardConfigJson: null },
+    });
+    revalidatePath("/");
+    return {
+      success: true,
+      message: `Tampilan dashboard akun ${staff.name} (${cleanId}) telah dikembalikan ke Default!`,
+      dashboardConfigJson: null,
+      prefs: DEFAULT_PURCHASING_PREFS,
+    };
+  } catch (err: unknown) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : "Gagal mengembalikan tampilan default.",
+    };
+  }
 }

@@ -17,6 +17,7 @@ model PurchasingStaff {
   telegramChatId   String?  // ID Chat Telegram Pribadi (misal: 123456789)
   telegramUsername String?  // Username Telegram (@username)
   telegramEnabled  Boolean  @default(false)
+  dashboardConfigJson String? // Preferensi layout & tampilan dashboard khusus staf ini
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 }

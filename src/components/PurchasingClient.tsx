@@ -19,7 +19,17 @@ import {
   testStaffTelegramNotification,
   saveNineRouterConfig,
   testNineRouterConnection,
+  saveStaffDashboardPrefs,
+  resetStaffDashboardPrefs,
 } from "@/app/actions";
+import {
+  DEFAULT_PURCHASING_PREFS,
+  PurchasingDashboardPrefs,
+  PurchasingStatKey,
+  getPurchasingBannerClass,
+  isPurchasingPrefsCustomized,
+  parsePurchasingPrefs,
+} from "@/lib/dashboardPrefs";
 import {
   ShoppingCart,
   Package,
@@ -70,10 +80,12 @@ import {
   Zap,
   Layers,
   Cpu,
+  LayoutDashboard,
 } from "lucide-react";
 import LocationMapEmbed from "./LocationMapEmbed";
 import NineRouterModal from "./NineRouterModal";
 import NineRouterChatbot from "./NineRouterChatbot";
+import DashboardCustomizerModal from "./DashboardCustomizerModal";
 
 export interface CurrentStaff {
   id: string;
@@ -84,6 +96,7 @@ export interface CurrentStaff {
   telegramChatId?: string | null;
   telegramUsername?: string | null;
   telegramEnabled?: boolean;
+  dashboardConfigJson?: string | null;
 }
 
 export default function PurchasingClient({ initialData }: { initialData: any }) {
@@ -206,14 +219,24 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
   const [botActiveInput, setBotActiveInput] = useState<boolean>(initialData?.telegramConfig?.isActive ?? true);
   const [isSavingBotConfig, setIsSavingBotConfig] = useState<boolean>(false);
 
-  // Integrasi 9Router AI Gateway
+  // Integrasi 9Router AI Gateway & Personalisasi Dashboard Per Staf
   const [showNineRouterModal, setShowNineRouterModal] = useState<boolean>(false);
+  const [showCustomizerModal, setShowCustomizerModal] = useState<boolean>(false);
   const [nineRouterStatus, setNineRouterStatus] = useState<{
     connected: boolean;
     modelsCount?: number;
   }>({
     connected: initialData?.nineRouterConfig?.lastStatus === "CONNECTED",
   });
+
+  const dashboardPrefs = useMemo(
+    () => parsePurchasingPrefs(currentStaff?.dashboardConfigJson),
+    [currentStaff?.dashboardConfigJson]
+  );
+  const isDashboardCustomized = useMemo(
+    () => isPurchasingPrefsCustomized(dashboardPrefs),
+    [dashboardPrefs]
+  );
 
   useEffect(() => {
     fetch("/api/ai/status")
@@ -1028,7 +1051,7 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
         if (parsed && parsed.idCard && parsed.name) {
           const fresh = initialData?.staffList?.find((s: any) => s.idCard === parsed.idCard);
           if (fresh) {
-            setCurrentStaff({
+            const hydrated: CurrentStaff = {
               id: fresh.id,
               idCard: fresh.idCard,
               name: fresh.name,
@@ -1037,9 +1060,15 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
               telegramChatId: fresh.telegramChatId,
               telegramUsername: fresh.telegramUsername,
               telegramEnabled: fresh.telegramEnabled,
-            });
+              dashboardConfigJson: fresh.dashboardConfigJson ?? parsed.dashboardConfigJson ?? null,
+            };
+            setCurrentStaff(hydrated);
+            setActiveTab(parsePurchasingPrefs(hydrated.dashboardConfigJson).defaultTab);
           } else {
             setCurrentStaff(parsed);
+            if (parsed.dashboardConfigJson) {
+              setActiveTab(parsePurchasingPrefs(parsed.dashboardConfigJson).defaultTab);
+            }
           }
         }
       }
@@ -1086,9 +1115,11 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
         telegramChatId: res.user.telegramChatId,
         telegramUsername: res.user.telegramUsername,
         telegramEnabled: res.user.telegramEnabled,
+        dashboardConfigJson: res.user.dashboardConfigJson || null,
       };
       setCurrentStaff(loggedStaff);
       localStorage.setItem("purchasing_logged_in_staff", JSON.stringify(loggedStaff));
+      setActiveTab(parsePurchasingPrefs(loggedStaff.dashboardConfigJson).defaultTab);
       setLoginIdInput("");
       showMessage("success", `Selamat datang, ${loggedStaff.name}! Login berhasil dengan ID: ${loggedStaff.idCard}`);
     } catch (err: any) {
@@ -1202,8 +1233,46 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
   const handleLogout = () => {
     setCurrentStaff(null);
     setShowStaffDropdown(false);
+    setActiveTab(DEFAULT_PURCHASING_PREFS.defaultTab);
     localStorage.removeItem("purchasing_logged_in_staff");
     showMessage("success", "Anda telah berhasil Log Out dari Sistem Purchasing.");
+  };
+
+  // Handler Simpan & Restore Default Tampilan Dashboard Khusus Staf Aktif
+  const handleSaveDashboardPrefs = async (nextPrefs: PurchasingDashboardPrefs): Promise<boolean> => {
+    if (!currentStaff) return false;
+    const res = await saveStaffDashboardPrefs(currentStaff.idCard, JSON.stringify(nextPrefs));
+    if (res.success) {
+      const updatedStaff: CurrentStaff = {
+        ...currentStaff,
+        dashboardConfigJson: res.dashboardConfigJson ?? null,
+      };
+      setCurrentStaff(updatedStaff);
+      localStorage.setItem("purchasing_logged_in_staff", JSON.stringify(updatedStaff));
+      if (res.prefs?.defaultTab) setActiveTab(res.prefs.defaultTab);
+      showMessage("success", res.message || "Tampilan dashboard Anda berhasil disimpan!");
+      return true;
+    }
+    showMessage("error", res.error || "Gagal menyimpan tampilan dashboard.");
+    return false;
+  };
+
+  const handleResetDashboardPrefs = async (): Promise<boolean> => {
+    if (!currentStaff) return false;
+    const res = await resetStaffDashboardPrefs(currentStaff.idCard);
+    if (res.success) {
+      const updatedStaff: CurrentStaff = {
+        ...currentStaff,
+        dashboardConfigJson: null,
+      };
+      setCurrentStaff(updatedStaff);
+      localStorage.setItem("purchasing_logged_in_staff", JSON.stringify(updatedStaff));
+      setActiveTab(DEFAULT_PURCHASING_PREFS.defaultTab);
+      showMessage("success", res.message || "Tampilan dashboard dikembalikan ke Default!");
+      return true;
+    }
+    showMessage("error", res.error || "Gagal mengembalikan tampilan default.");
+    return false;
   };
 
   // Quick Action: Buka Form PO dari Barang Menipis Gudang
@@ -1721,6 +1790,39 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
 
                       <button
                         type="button"
+                        onClick={() => {
+                          setShowStaffDropdown(false);
+                          setShowCustomizerModal(true);
+                        }}
+                        className="w-full flex items-center justify-between gap-2 px-3 py-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 rounded-lg transition-colors cursor-pointer text-left"
+                      >
+                        <span className="flex items-center gap-2">
+                          <LayoutDashboard className="w-4 h-4 text-emerald-600 shrink-0" />
+                          <span>Atur Tampilan Saya</span>
+                        </span>
+                        {isDashboardCustomized && (
+                          <span className="text-[9px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-bold">
+                            Custom
+                          </span>
+                        )}
+                      </button>
+
+                      {isDashboardCustomized && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowStaffDropdown(false);
+                            void handleResetDashboardPrefs();
+                          }}
+                          className="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-amber-700 hover:bg-amber-50 rounded-lg transition-colors cursor-pointer text-left"
+                        >
+                          <RotateCcw className="w-4 h-4 text-amber-600 shrink-0" />
+                          <span>Restore Default Dashboard</span>
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
                         onClick={handleLogout}
                         className="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer border-t border-slate-100"
                       >
@@ -1739,20 +1841,45 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
       {/* Main Content */}
       <main className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
         {/* Banner Hero */}
-        <div className="bg-gradient-to-r from-slate-900 via-emerald-950 to-slate-900 text-white p-5 rounded-2xl shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-4">
+        {dashboardPrefs.showBanner && (
+        <div className={`bg-gradient-to-r ${getPurchasingBannerClass(dashboardPrefs.themeColor)} text-white p-5 rounded-2xl shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-4`}>
           <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl sm:text-2xl font-black tracking-tight">Sistem Pengadaan & Purchase Order</h1>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-xl sm:text-2xl font-black tracking-tight">
+                {dashboardPrefs.customTitle || "Sistem Pengadaan & Purchase Order"}
+              </h1>
               <span className="text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 px-2.5 py-0.5 rounded-md uppercase">
                 Enterprise Sync
               </span>
+              {isDashboardCustomized && (
+                <button
+                  type="button"
+                  onClick={() => void handleResetDashboardPrefs()}
+                  className="inline-flex items-center gap-1 text-[11px] bg-amber-400/20 hover:bg-amber-400/30 text-amber-200 border border-amber-300/30 px-2 py-0.5 rounded-md font-semibold cursor-pointer transition"
+                  title="Kembalikan tampilan dashboard Anda ke bawaan sistem"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>Restore Default</span>
+                </button>
+              )}
             </div>
             <p className="text-xs text-slate-300 mt-1">
+              {dashboardPrefs.customTitle ? "Sistem Pengadaan & Purchase Order • " : ""}
               Terhubung langsung dengan Gudang Inventaris • Data barang menipis terdeteksi otomatis • Sinkronisasi PO instan
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={() => setShowCustomizerModal(true)}
+              className="bg-white/10 hover:bg-white/20 border border-white/20 text-white px-3 py-2.5 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer backdrop-blur-xs"
+              title="Atur tampilan dashboard pribadi Anda (tidak memengaruhi user lain)"
+            >
+              <LayoutDashboard className="w-4 h-4" />
+              <span className="hidden sm:inline">Atur Tampilan</span>
+            </button>
+
             <button
               type="button"
               onClick={() => {
@@ -1802,71 +1929,87 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
             </button>
           </div>
         </div>
+        )}
 
-        {/* 5 Stat Cards Finansial & Operasional */}
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3.5">
-          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-            <div className="flex items-center justify-between text-slate-500 text-xs font-medium">
-              <span>Total Belanja Pengadaan</span>
-              <TrendingUp className="w-4 h-4 text-emerald-600" />
+        {/* 5 Stat Cards Finansial & Operasional (Urutan & Visibilitas Sesuai Preferensi Per Staf) */}
+        {dashboardPrefs.showStats && (() => {
+          const statCardsMap: Record<PurchasingStatKey, React.ReactNode> = {
+            totalSpending: (
+              <div key="totalSpending" className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
+                <div className="flex items-center justify-between text-slate-500 text-xs font-medium">
+                  <span>Total Belanja Pengadaan</span>
+                  <TrendingUp className="w-4 h-4 text-emerald-600" />
+                </div>
+                <div className="text-base sm:text-lg font-black text-slate-900 mt-2 truncate">
+                  {formatRupiah(initialData.stats.totalSpending)}
+                </div>
+                <div className="text-[10px] text-slate-400 mt-1">Akumulasi seluruh PO resmi</div>
+              </div>
+            ),
+            totalUnpaid: (
+              <div key="totalUnpaid" className="bg-white p-4 rounded-xl border border-rose-200/80 bg-rose-50/20 shadow-xs">
+                <div className="flex items-center justify-between text-rose-700 text-xs font-semibold">
+                  <span>Tagihan Belum Lunas (Tempo)</span>
+                  <Wallet className="w-4 h-4 text-rose-600" />
+                </div>
+                <div className="text-base sm:text-lg font-black text-rose-600 mt-2 truncate">
+                  {formatRupiah(initialData.stats.totalUnpaid || 0)}
+                </div>
+                <div className="text-[10px] text-rose-500 mt-1">
+                  {initialData.stats.unpaidCount || 0} PO menunggu pembayaran
+                </div>
+              </div>
+            ),
+            totalPaid: (
+              <div key="totalPaid" className="bg-white p-4 rounded-xl border border-emerald-200/80 bg-emerald-50/20 shadow-xs">
+                <div className="flex items-center justify-between text-emerald-800 text-xs font-semibold">
+                  <span>Pembayaran Lunas (Kasir)</span>
+                  <Banknote className="w-4 h-4 text-emerald-600" />
+                </div>
+                <div className="text-base sm:text-lg font-black text-emerald-700 mt-2 truncate">
+                  {formatRupiah(initialData.stats.totalPaid || 0)}
+                </div>
+                <div className="text-[10px] text-emerald-600 mt-1">
+                  {initialData.stats.paidCount || 0} PO telah dilunasi
+                </div>
+              </div>
+            ),
+            receivedCount: (
+              <div key="receivedCount" className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
+                <div className="flex items-center justify-between text-slate-500 text-xs font-medium">
+                  <span>Kedatangan di Gudang</span>
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                </div>
+                <div className="text-base sm:text-lg font-black text-slate-900 mt-2">
+                  {initialData.stats.receivedCount} <span className="text-xs font-normal text-slate-400">/ {initialData.stats.totalPOs} PO</span>
+                </div>
+                <div className="text-[10px] text-slate-400 mt-1">Stok fisik telah diterima</div>
+              </div>
+            ),
+            lowStockGudang: (
+              <div key="lowStockGudang" className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
+                <div className="flex items-center justify-between text-slate-500 text-xs font-medium">
+                  <span>Barang Gudang Menipis</span>
+                  <AlertTriangle className="w-4 h-4 text-amber-500" />
+                </div>
+                <div className={`text-base sm:text-lg font-black mt-2 ${initialData.stats.lowStockGudangCount > 0 ? "text-rose-600" : "text-slate-900"}`}>
+                  {initialData.stats.lowStockGudangCount} <span className="text-xs font-normal text-slate-500">produk</span>
+                </div>
+                <div className="text-[10px] text-slate-400 mt-1">Perlu dibuatkan PO restock</div>
+              </div>
+            ),
+          };
+          const activeCards = dashboardPrefs.statOrder.filter((k) => dashboardPrefs.visibleStatKeys[k]);
+          if (activeCards.length === 0) return null;
+          return (
+            <div className="grid grid-cols-2 lg:grid-cols-5 gap-3.5">
+              {activeCards.map((k) => statCardsMap[k])}
             </div>
-            <div className="text-base sm:text-lg font-black text-slate-900 mt-2 truncate">
-              {formatRupiah(initialData.stats.totalSpending)}
-            </div>
-            <div className="text-[10px] text-slate-400 mt-1">Akumulasi seluruh PO resmi</div>
-          </div>
-
-          <div className="bg-white p-4 rounded-xl border border-rose-200/80 bg-rose-50/20 shadow-xs">
-            <div className="flex items-center justify-between text-rose-700 text-xs font-semibold">
-              <span>Tagihan Belum Lunas (Tempo)</span>
-              <Wallet className="w-4 h-4 text-rose-600" />
-            </div>
-            <div className="text-base sm:text-lg font-black text-rose-600 mt-2 truncate">
-              {formatRupiah(initialData.stats.totalUnpaid || 0)}
-            </div>
-            <div className="text-[10px] text-rose-500 mt-1">
-              {initialData.stats.unpaidCount || 0} PO menunggu pembayaran
-            </div>
-          </div>
-
-          <div className="bg-white p-4 rounded-xl border border-emerald-200/80 bg-emerald-50/20 shadow-xs">
-            <div className="flex items-center justify-between text-emerald-800 text-xs font-semibold">
-              <span>Pembayaran Lunas (Kasir)</span>
-              <Banknote className="w-4 h-4 text-emerald-600" />
-            </div>
-            <div className="text-base sm:text-lg font-black text-emerald-700 mt-2 truncate">
-              {formatRupiah(initialData.stats.totalPaid || 0)}
-            </div>
-            <div className="text-[10px] text-emerald-600 mt-1">
-              {initialData.stats.paidCount || 0} PO telah dilunasi
-            </div>
-          </div>
-
-          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-            <div className="flex items-center justify-between text-slate-500 text-xs font-medium">
-              <span>Kedatangan di Gudang</span>
-              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-            </div>
-            <div className="text-base sm:text-lg font-black text-slate-900 mt-2">
-              {initialData.stats.receivedCount} <span className="text-xs font-normal text-slate-400">/ {initialData.stats.totalPOs} PO</span>
-            </div>
-            <div className="text-[10px] text-slate-400 mt-1">Stok fisik telah diterima</div>
-          </div>
-
-          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-            <div className="flex items-center justify-between text-slate-500 text-xs font-medium">
-              <span>Barang Gudang Menipis</span>
-              <AlertTriangle className="w-4 h-4 text-amber-500" />
-            </div>
-            <div className={`text-base sm:text-lg font-black mt-2 ${initialData.stats.lowStockGudangCount > 0 ? "text-rose-600" : "text-slate-900"}`}>
-              {initialData.stats.lowStockGudangCount} <span className="text-xs font-normal text-slate-500">produk</span>
-            </div>
-            <div className="text-[10px] text-slate-400 mt-1">Perlu dibuatkan PO restock</div>
-          </div>
-        </div>
+          );
+        })()}
 
         {/* NOTIFIKASI REAL-TIME KEDATANGAN BARANG DARI GUDANG */}
-        {initialData.deliveryNotifications && initialData.deliveryNotifications.length > 0 && (
+        {dashboardPrefs.showDeliveryAlerts && initialData.deliveryNotifications && initialData.deliveryNotifications.length > 0 && (
           <div className="bg-gradient-to-r from-emerald-900 via-teal-900 to-slate-900 text-white rounded-2xl p-4 sm:p-5 shadow-lg border border-emerald-500/40 space-y-3">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div className="flex items-center gap-3">
@@ -2043,6 +2186,7 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
         {activeTab === "dashboard" && (
           <div className="space-y-6">
             {/* Quick Action Hub - Tombol Pintas Aksi Cepat agar Sangat Mudah Digunakan */}
+            {dashboardPrefs.showQuickActions && (
             <div className="bg-gradient-to-r from-emerald-50 via-teal-50 to-blue-50 border border-emerald-200/80 rounded-2xl p-4 sm:p-5 shadow-xs">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
@@ -2116,6 +2260,7 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                 </div>
               </div>
             </div>
+            )}
             {/* Peringatan Barang Menipis dari Gudang */}
             {initialData.gudangIntegration.lowStockItems.length > 0 && (
               <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-5 space-y-3">
@@ -2873,7 +3018,7 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
+              <table className={`w-full text-left text-xs ${dashboardPrefs.compactTable ? "[&_td]:py-1.5 [&_th]:py-2" : ""}`}>
                 <thead className="bg-slate-50 text-slate-600 font-semibold uppercase tracking-wider text-[10px]">
                   <tr>
                     <th className="p-3">No. PO</th>
@@ -4199,7 +4344,7 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
+              <table className={`w-full text-left text-xs ${dashboardPrefs.compactTable ? "[&_td]:py-1.5 [&_th]:py-2" : ""}`}>
                 <thead className="bg-slate-50 text-slate-600 font-semibold uppercase tracking-wider text-[10px]">
                   <tr>
                     <th className="p-3">Nama Produk &amp; Barcode</th>
@@ -6859,18 +7004,32 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
       />
 
       {/* CHATBOT AI TERHUBUNG KE 9ROUTER (POJOK KANAN BAWAH) */}
-      <NineRouterChatbot
-        projectLabel="Purchasing"
-        isConnected={nineRouterStatus.connected}
-        defaultModel={initialData?.nineRouterConfig?.defaultModel}
-        contextSummary={chatbotContextSummary}
-        quickPrompts={[
-          "Vendor mana saja yang menawarkan harga bahan baku termurah?",
-          "PO mana saja yang status pembayarannya belum lunas?",
-          "Buatkan ringkasan aktivitas pengadaan dan PR dari gudang.",
-        ]}
-        onOpenSettings={() => setShowNineRouterModal(true)}
-      />
+      {dashboardPrefs.showChatbot && (
+        <NineRouterChatbot
+          projectLabel="Purchasing"
+          isConnected={nineRouterStatus.connected}
+          defaultModel={initialData?.nineRouterConfig?.defaultModel}
+          contextSummary={chatbotContextSummary}
+          quickPrompts={[
+            "Vendor mana saja yang menawarkan harga bahan baku termurah?",
+            "PO mana saja yang status pembayarannya belum lunas?",
+            "Buatkan ringkasan aktivitas pengadaan dan PR dari gudang.",
+          ]}
+          onOpenSettings={() => setShowNineRouterModal(true)}
+        />
+      )}
+
+      {/* MODAL PERSONALISASI & RESTORE DEFAULT DASHBOARD PER STAF */}
+      {showCustomizerModal && currentStaff && (
+        <DashboardCustomizerModal
+          userName={currentStaff.name}
+          userIdCard={currentStaff.idCard}
+          currentPrefs={dashboardPrefs}
+          onClose={() => setShowCustomizerModal(false)}
+          onSave={handleSaveDashboardPrefs}
+          onResetDefault={handleResetDashboardPrefs}
+        />
+      )}
     </div>
   );
 }
