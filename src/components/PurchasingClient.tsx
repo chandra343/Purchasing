@@ -1544,7 +1544,7 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
 
       {/* Top Navbar Header */}
       <header className="sticky top-0 z-30 bg-white border-b border-slate-200 shadow-2xs">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-3">
+        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5 shrink-0">
             <div className="bg-emerald-600 text-white p-1.5 rounded-lg shadow-xs flex items-center justify-center">
               <ShoppingCart className="w-5 h-5" />
@@ -1710,7 +1710,7 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
       </header>
 
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+      <main className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
         {/* Banner Hero */}
         <div className="bg-gradient-to-r from-slate-900 via-emerald-950 to-slate-900 text-white p-5 rounded-2xl shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
