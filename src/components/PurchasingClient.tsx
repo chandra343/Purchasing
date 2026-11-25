@@ -86,6 +86,7 @@ import LocationMapEmbed from "./LocationMapEmbed";
 import NineRouterModal from "./NineRouterModal";
 import NineRouterChatbot from "./NineRouterChatbot";
 import DashboardCustomizerModal from "./DashboardCustomizerModal";
+import DashboardErrorBoundary from "./DashboardErrorBoundary";
 
 export interface CurrentStaff {
   id: string;
@@ -1838,7 +1839,13 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
         </div>
       </header>
 
-      {/* Main Content */}
+      {/* Main Content (Terlindung Error Boundary & Safe-Mode Restore Default Per Staf) */}
+      <DashboardErrorBoundary
+        userIdCard={currentStaff?.idCard}
+        userName={currentStaff?.name}
+        resetKey={`${currentStaff?.idCard || "guest"}-${currentStaff?.dashboardConfigJson || "default"}`}
+        onRestoreDefault={handleResetDashboardPrefs}
+      >
       <main className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
         {/* Banner Hero */}
         {dashboardPrefs.showBanner && (
@@ -4722,6 +4729,7 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
           </div>
         )}
       </main>
+      </DashboardErrorBoundary>
 
       {/* MODAL 1: FORM TERBITKAN PURCHASE ORDER (PO) BARU */}
       {showCreatePoModal && (
