@@ -1543,118 +1543,77 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
       )}
 
       {/* Top Navbar Header */}
-      <header className="sticky top-0 z-30 bg-white border-b border-slate-200 shadow-xs">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="bg-emerald-600 text-white p-2 rounded-xl shadow-md flex items-center justify-center">
-              <ShoppingCart className="w-6 h-6" />
+      <header className="sticky top-0 z-30 bg-white border-b border-slate-200 shadow-2xs">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 shrink-0">
+            <div className="bg-emerald-600 text-white p-1.5 rounded-lg shadow-xs flex items-center justify-center">
+              <ShoppingCart className="w-5 h-5" />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-black text-lg text-slate-900 tracking-tight">PURCHASING</span>
-                <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full uppercase tracking-wider">
-                  Procurement Module
-                </span>
-              </div>
-              <p className="text-xs text-slate-500 hidden sm:block">Sistem Pengadaan, Vendor & Purchase Order</p>
-            </div>
+            <span className="font-bold text-base text-slate-900 tracking-tight whitespace-nowrap">
+              Purchasing
+            </span>
           </div>
 
-          <div className="flex items-center gap-2.5">
-            {/* Status Koneksi ke Gudang */}
+          <div className="flex items-center gap-2 shrink-0">
             <div
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border ${
-                initialData.gudangIntegration.connected
-                  ? "bg-emerald-50 text-emerald-700 border-emerald-300"
-                  : "bg-rose-50 text-rose-700 border-rose-300"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-white text-slate-700 border border-slate-200 whitespace-nowrap"
+              title={`Status koneksi Gudang (${initialData.gudangIntegration.apiUrl}): ${
+                initialData.gudangIntegration.connected ? "Terhubung" : "Offline"
               }`}
-              title={`Koneksi ke sistem gudang di ${initialData.gudangIntegration.apiUrl}`}
             >
-              <span className="relative flex h-2 w-2">
-                {initialData.gudangIntegration.connected && (
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                )}
-                <span
-                  className={`relative inline-flex rounded-full h-2 w-2 ${
-                    initialData.gudangIntegration.connected ? "bg-emerald-500" : "bg-rose-500"
-                  }`}
-                ></span>
-              </span>
-              <span className="hidden md:inline">Gudang:</span>
-              <span>{initialData.gudangIntegration.connected ? "Terhubung (Port 3000)" : "Offline"}</span>
+              <span
+                className={`w-2 h-2 rounded-full shrink-0 ${
+                  initialData.gudangIntegration.connected ? "bg-emerald-500" : "bg-rose-500"
+                }`}
+              />
+              <span className="hidden sm:inline">Gudang</span>
             </div>
 
-            {/* Pill Sinkronisasi PPN Resmi Indonesia */}
             <button
               type="button"
               onClick={() => setShowTaxModal(true)}
-              className="inline-flex items-center gap-1.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-900 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition shadow-xs"
-              title="Lihat Regulasi Pajak Resmi Republik Indonesia (DJP / Kemenkeu)"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 cursor-pointer whitespace-nowrap transition"
+              title="Lihat Regulasi Pajak PPN Indonesia (DJP / Kemenkeu)"
             >
-              <Landmark className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
-              <span className="hidden md:inline">PPN RI:</span>
-              <span className="font-bold">{initialData.taxSetting?.rate || 12}%</span>
-              <span className="text-[10px] bg-emerald-200 text-emerald-900 font-mono px-1.5 py-0.5 rounded font-bold">
-                pajak.go.id
-              </span>
+              <Landmark className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              <span>PPN {initialData.taxSetting?.rate || 12}%</span>
             </button>
 
-            {/* Pill Integrasi 9Router AI Gateway */}
             <button
               type="button"
               onClick={() => setShowNineRouterModal(true)}
-              className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition shadow-xs border ${
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 cursor-pointer whitespace-nowrap transition"
+              title={
                 nineRouterStatus.connected
-                  ? "bg-violet-50 hover:bg-violet-100 border-violet-300 text-violet-900"
-                  : "bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700"
-              }`}
-              title="Pengaturan & Status 9Router AI Gateway (Port 20128)"
+                  ? "9Router AI Gateway: Terhubung (Port 20128)"
+                  : "9Router AI Gateway: Klik untuk menghubungkan"
+              }
             >
-              <Cpu
-                className={`w-3.5 h-3.5 shrink-0 ${
-                  nineRouterStatus.connected ? "text-violet-600" : "text-slate-400"
+              <Cpu className="w-3.5 h-3.5 text-violet-600 shrink-0" />
+              <span className="hidden md:inline">9Router</span>
+              <span
+                className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                  nineRouterStatus.connected ? "bg-emerald-500" : "bg-amber-400"
                 }`}
               />
-              <span className="hidden lg:inline">9Router AI</span>
-              {nineRouterStatus.connected ? (
-                <span className="text-[10px] bg-violet-200 text-violet-900 font-bold px-1.5 py-0.5 rounded">
-                  Aktif
-                </span>
-              ) : (
-                <span className="text-[10px] bg-amber-100 text-amber-800 font-bold px-1.5 py-0.5 rounded">
-                  Hubungkan
-                </span>
-              )}
             </button>
 
-            {/* Pill Integrasi Telegram ID Card */}
             {currentStaff && (
               <button
                 type="button"
                 onClick={openTelegramModal}
-                className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition shadow-xs border ${
-                  currentStaff.telegramEnabled && currentStaff.telegramChatId
-                    ? "bg-sky-50 hover:bg-sky-100 border-sky-300 text-sky-900"
-                    : "bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700"
+                className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 cursor-pointer whitespace-nowrap transition"
+                title={`Telegram (${currentStaff.idCard}): ${
+                  currentStaff.telegramEnabled && currentStaff.telegramChatId ? "Aktif" : "Belum terhubung"
                 }`}
-                title={`Koneksi Notifikasi Telegram untuk ID Card: ${currentStaff.idCard}`}
               >
-                <Send
-                  className={`w-3.5 h-3.5 shrink-0 ${
-                    currentStaff.telegramEnabled && currentStaff.telegramChatId ? "text-sky-600" : "text-slate-400"
+                <Send className="w-3.5 h-3.5 text-sky-600 shrink-0" />
+                <span>Telegram</span>
+                <span
+                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                    currentStaff.telegramEnabled && currentStaff.telegramChatId ? "bg-emerald-500" : "bg-amber-400"
                   }`}
                 />
-                <span className="hidden lg:inline">Telegram:</span>
-                <span className="font-mono font-bold">{currentStaff.idCard}</span>
-                {currentStaff.telegramEnabled && currentStaff.telegramChatId ? (
-                  <span className="text-[10px] bg-sky-200 text-sky-900 font-bold px-1.5 py-0.5 rounded">
-                    Aktif
-                  </span>
-                ) : (
-                  <span className="text-[10px] bg-amber-100 text-amber-800 font-bold px-1.5 py-0.5 rounded">
-                    Hubungkan
-                  </span>
-                )}
               </button>
             )}
 
@@ -1664,20 +1623,16 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
                 <button
                   type="button"
                   onClick={() => setShowStaffDropdown(!showStaffDropdown)}
-                  className="flex items-center gap-2 bg-white hover:bg-slate-50 border border-slate-200 pl-2 pr-3 py-1.5 rounded-lg shadow-xs transition-all cursor-pointer"
+                  className="flex items-center gap-2 bg-white hover:bg-slate-50 border border-slate-200 pl-1.5 pr-2.5 py-1 rounded-lg transition-all cursor-pointer whitespace-nowrap"
+                  title={`${currentStaff.name} (ID: ${currentStaff.idCard})`}
                 >
-                  <div className="w-6 h-6 rounded-full bg-emerald-600 text-white flex items-center justify-center font-bold text-xs uppercase">
+                  <div className="w-6 h-6 rounded-full bg-emerald-600 text-white flex items-center justify-center font-bold text-xs uppercase shrink-0">
                     {currentStaff.name.charAt(0)}
                   </div>
-                  <div className="text-left hidden sm:block">
-                    <span className="block text-xs font-bold text-slate-800 leading-tight">
-                      {currentStaff.name}
-                    </span>
-                    <span className="text-[10px] text-slate-500 font-mono font-medium">
-                      ID: {currentStaff.idCard}
-                    </span>
-                  </div>
-                  <ChevronDown className="w-3.5 h-3.5 text-slate-400 ml-0.5" />
+                  <span className="text-xs font-semibold text-slate-800 hidden sm:inline max-w-[120px] truncate">
+                    {currentStaff.name}
+                  </span>
+                  <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                 </button>
 
                 {showStaffDropdown && (
@@ -1727,8 +1682,20 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
 
                       <button
                         type="button"
+                        onClick={() => {
+                          setShowStaffDropdown(false);
+                          setShowNineRouterModal(true);
+                        }}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-violet-700 hover:bg-violet-50 rounded-lg transition-colors cursor-pointer text-left"
+                      >
+                        <Cpu className="w-4 h-4 text-violet-600 shrink-0" />
+                        <span>Pengaturan 9Router AI</span>
+                      </button>
+
+                      <button
+                        type="button"
                         onClick={handleLogout}
-                        className="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                        className="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer border-t border-slate-100"
                       >
                         <LogOut className="w-4 h-4 text-rose-500" />
                         <span>Log Out (Keluar)</span>
