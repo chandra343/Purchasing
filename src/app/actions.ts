@@ -21,6 +21,12 @@ import {
   broadcastToPurchasingStaff,
   sendTelegramTestMessage,
 } from "@/lib/telegram";
+import {
+  checkNineRouterHealth,
+  getNineRouterConfigDto,
+  getRawNineRouterConfig,
+  normalizeNineRouterUrls,
+} from "@/lib/nineRouter";
 
 // 1. Autentikasi Menggunakan Nomor ID Card Karyawan Purchasing
 export async function loginStaffWithIdCard(idCard: string) {
@@ -390,6 +396,7 @@ export async function getPurchasingDashboardData() {
     deliveryNotifications,
     taxSetting,
     telegramConfig: await getTelegramConfig(),
+    nineRouterConfig: await getNineRouterConfigDto(),
     vendorPrices: activeVendorPrices,
     activityLogs: activeLogs,
     purchaseOrders: purchaseOrders.map((po) => ({
@@ -1244,4 +1251,75 @@ export async function testStaffTelegramNotification(
   } catch (err: any) {
     return { success: false, error: err.message };
   }
+}
+
+// 10. Pengaturan & Verifikasi Koneksi 9Router AI Gateway (Purchasing)
+export async function saveNineRouterConfig(data: {
+  baseUrl: string;
+  apiKey?: string;
+  clearApiKey?: boolean;
+  defaultModel?: string;
+  isEnabled: boolean;
+  notes?: string;
+}) {
+  try {
+    const existing = await getRawNineRouterConfig();
+    const { apiV1Url } = normalizeNineRouterUrls(data.baseUrl);
+    const nextApiKey = data.clearApiKey
+      ? null
+      : data.apiKey?.trim()
+        ? data.apiKey.trim()
+        : existing.apiKey;
+
+    await prisma.nineRouterConfig.upsert({
+      where: { id: "default" },
+      update: {
+        baseUrl: apiV1Url,
+        apiKey: nextApiKey,
+        defaultModel: data.defaultModel?.trim() || null,
+        isEnabled: Boolean(data.isEnabled),
+        notes: data.notes?.trim() || null,
+      },
+      create: {
+        id: "default",
+        baseUrl: apiV1Url,
+        apiKey: nextApiKey,
+        defaultModel: data.defaultModel?.trim() || null,
+        isEnabled: Boolean(data.isEnabled),
+        notes: data.notes?.trim() || null,
+      },
+    });
+
+    await logActivity({
+      type: "AI_ROUTER_CONFIG",
+      title: "Konfigurasi 9Router AI Gateway",
+      description: `Endpoint 9Router diperbarui ke ${apiV1Url} (Status integrasi: ${
+        data.isEnabled ? "Aktif" : "Nonaktif"
+      }, Default Model: ${data.defaultModel?.trim() || "Auto"}).`,
+      actor: "Tim Purchasing",
+      actorRole: "Admin Pengadaan",
+      referenceId: "9Router",
+    });
+
+    const config = await getNineRouterConfigDto();
+    revalidatePath("/");
+    return {
+      success: true,
+      message: "Konfigurasi 9Router AI Gateway berhasil disimpan!",
+      config,
+    };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+export async function testNineRouterConnection(data?: {
+  baseUrl?: string;
+  apiKey?: string;
+}) {
+  return await checkNineRouterHealth({
+    baseUrl: data?.baseUrl,
+    apiKey: data?.apiKey,
+    persistStatus: !data?.baseUrl,
+  });
 }

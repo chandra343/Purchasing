@@ -1,0 +1,461 @@
+import "open-sse/index.js";
+
+import {
+  getProviderCredentials,
+  markAccountUnavailable,
+  clearAccountError,
+  extractApiKey,
+  isValidApiKey,
+} from "../services/auth.js";
+import { handleAntigravityQuotaError, clearAntigravityStrikes } from "../services/antigravityQuota.js";
+import { getSettings } from "@/lib/localDb";
+import { getModelInfo, getComboModels } from "../services/model.js";
+import { handleChatCore } from "open-sse/handlers/chatCore.js";
+import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
+import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
+import { appendPxpipeEvent } from "@/lib/pxpipe/events.js";
+import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
+import { upstreamResponseHeaders } from "open-sse/utils/upstreamHeaders.js";
+import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
+import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
+import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
+import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
+import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
+import { resolveSessionIdentity } from "open-sse/utils/sessionManager.js";
+import * as log from "../utils/logger.js";
+import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
+import { getProjectIdForConnection } from "open-sse/services/projectId.js";
+import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
+import { getKeyAccessContext, enforceKeyAccess, filterAdapterModels } from "../services/keyAccess.js";
+import { resolveSmartChoice } from "../services/systemoneRouter.js";
+
+/**
+ * Handle chat completion request
+ * Supports: OpenAI, Claude, Gemini, OpenAI Responses API formats
+ * Format detection and translation handled by translator
+ */
+export async function handleChat(request, clientRawRequest = null) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    log.warn("CHAT", "Invalid JSON body");
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
+  }
+
+  // Build clientRawRequest for logging (if not provided)
+  if (!clientRawRequest) {
+    const url = new URL(request.url);
+    clientRawRequest = {
+      endpoint: url.pathname,
+      body,
+      headers: Object.fromEntries(request.headers.entries())
+    };
+  }
+  // Claude Code marks a 1M-context request as `<model>[1m]`; the marker matches
+  // no combo, alias or provider/model pair, so it must not reach resolution.
+  // The capability travels in the anthropic-beta header, forwarded as-is.
+  const { model: modelStr, contextMarker } = stripModelContextMarker(body.model);
+  if (contextMarker) body.model = modelStr;
+
+  const session = resolveSessionIdentity({ headers: clientRawRequest?.headers, body });
+  const sessionId = session?.sessionId || null;
+
+  // Request summary is emitted as the unified "▶" line in chatCore (has fmt/thinking/account)
+
+  // Log API key (masked)
+  const authHeader = request.headers.get("Authorization");
+  const apiKey = extractApiKey(request);
+  if (authHeader && apiKey) {
+    const masked = log.maskKey(apiKey);
+    log.debug("AUTH", `API Key: ${masked}`);
+  } else {
+    log.debug("AUTH", "No API key provided (local mode)");
+  }
+
+  // Per-request payload override (dashboard A/B test "test" arm). The
+  // developer relay (src/app/api/developer/chat/route.js) stashes it here;
+  // it must NOT reach the upstream provider, so strip it after capture.
+  // Captured into a live object and forwarded to handleSingleModelChat as an
+  // explicit argument. It CANNOT be a standalone local: the CLI production
+  // minifier constant-folds + dead-code-eliminates a bare `const x = ternary`
+  // that is only used as an argument, dropping the declaration and leaving
+  // dangling reads ("dashboardPayloadOverride is not defined"). Reading from
+  // a property of a live object is not foldable/DCE-able, so it survives.
+  const payloadOverrideBox = {
+    value:
+      typeof body.__dashboardPayloadOverride === "string"
+        ? body.__dashboardPayloadOverride
+        : "",
+  };
+  delete body.__dashboardPayloadOverride;
+
+  // Upstream: when the model string carried an inline [context] marker, derive
+  // the clean "requestedModel" name for credential selection and log display.
+  const requestedModelArg = contextMarker ? `${modelStr.slice(modelStr.indexOf("/") + 1)}[${contextMarker}]` : null;
+
+  // Enforce API key if enabled in settings
+  const settings = await getSettings();
+  if (settings.requireApiKey) {
+    if (!apiKey) {
+      log.warn("AUTH", "Missing API key (requireApiKey=true)");
+      return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
+    }
+    const valid = await isValidApiKey(apiKey);
+    if (!valid) {
+      log.warn("AUTH", "Invalid API key (requireApiKey=true)");
+      return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
+    }
+  }
+
+  if (!modelStr) {
+    log.warn("CHAT", "Missing model");
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
+  }
+
+  // Per-key access control: a restricted key may call only its listed combos and
+  // models. Checked once on the requested target, before bypass, combo expansion
+  // and any credential lookup; an allowed combo grants the members it routes to.
+  const keyAccess = await getKeyAccessContext(request);
+  const keyAccessDenied = await enforceKeyAccess(keyAccess, modelStr);
+  if (keyAccessDenied) return keyAccessDenied;
+
+  // Bypass naming/warmup requests before combo rotation to avoid wasting rotation slots
+  const userAgent = request?.headers?.get("user-agent") || "";
+  const bypassResponse = handleBypassRequest(body, modelStr, userAgent, !!settings.ccFilterNaming);
+  if (bypassResponse) return bypassResponse.response || bypassResponse;
+
+  const requiredCapabilities = detectRequiredCapabilities(body);
+
+  // Check if model is a combo (has multiple models with fallback)
+  const comboModels = await getComboModels(modelStr);
+  if (comboModels) {
+    // Check for combo-specific strategy first, fallback to global
+    const comboStrategies = settings.comboStrategies || {};
+    const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
+    const comboStrategy = comboSpecificStrategy || settings.comboStrategy || "fallback";
+    const augmentedModels = await filterAdapterModels(keyAccess, augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, settings), comboModels);
+    const adapterAdded = augmentedModels.filter((m) => !comboModels.includes(m));
+
+    if (comboStrategy === "fusion") {
+      log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: fusion)`);
+      return handleFusionChat({
+        body,
+        models: comboModels,
+        handleSingleModel: (b, m, isPanel) => {
+          let cleanRawReq = clientRawRequest;
+          if (isPanel && clientRawRequest) {
+            const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
+            cleanRawReq = { ...clientRawRequest, body: cleanBody };
+          }            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, payloadOverrideBox.value, requestedModelArg);
+        },
+        log,
+        comboName: modelStr,
+        judgeModel: comboStrategies[modelStr]?.judgeModel,
+        tuning: comboStrategies[modelStr]?.fusionTuning,
+      });
+    }
+
+    const comboStickyLimit = settings.comboStickyRoundRobinLimit;
+    const comboCfg = comboStrategies[modelStr] || {};
+    log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
+    return handleComboChat({
+      body,
+      models: augmentedModels,
+      handleSingleModel: withCapacityAdapterStripping(          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, payloadOverrideBox.value, requestedModelArg),
+        adapterAdded
+      ),
+      log,
+      comboName: modelStr,
+      comboStrategy,
+      comboStickyLimit,
+      sessionId,
+      smartPolicy: comboCfg.smartPolicy || "smart",
+      sessionSticky: comboCfg.sessionSticky !== false,
+      confidenceThreshold: typeof comboCfg.confidenceThreshold === "number" ? comboCfg.confidenceThreshold : 0.8,
+      resolveSmartChoice: comboStrategy === "smart"
+        ? (b, m) => resolveSmartChoice({
+            body: b,
+            models: m,
+            routerModel: comboCfg.routerModel,
+            log,
+          })
+        : null,
+    });
+  }
+
+  // Single model request — may still switch to a capacity-adapter model if the
+  // target lacks a capability the request needs (e.g. no vision, request has an image).
+  const soloAugmented = await filterAdapterModels(keyAccess, augmentModelsWithCapacityAdapter([modelStr], requiredCapabilities, settings), [modelStr]);
+  if (soloAugmented.length > 1) {
+    const adapterAdded = soloAugmented.filter((m) => m !== modelStr);
+    log.info("CHAT", `Capacity adapter for [${[...requiredCapabilities].join(",")}] on "${modelStr}" → trying ${soloAugmented.join(", ")}`);
+    return handleComboChat({
+      body,
+      models: soloAugmented,
+      handleSingleModel: withCapacityAdapterStripping(          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, payloadOverrideBox.value, requestedModelArg),
+        adapterAdded
+      ),
+      log,
+      comboName: modelStr,
+      comboStrategy: getActiveAdapterStrategy(requiredCapabilities, settings)
+    });
+  }
+
+  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, payloadOverrideBox.value, requestedModelArg);}
+
+/**
+ * Handle single model chat request
+ */
+async function handleSingleModelChat(
+  body,
+  modelStr,
+  clientRawRequest = null,
+  request = null,
+  apiKey = null,
+  dashboardPayloadOverride = "",
+  requestedModel = null
+) {  const modelInfo = await getModelInfo(modelStr);
+
+  // If provider is null, this might be a combo name - check and handle
+  if (!modelInfo.provider) {
+    const comboModels = await getComboModels(modelStr);
+    if (comboModels) {
+      const chatSettings = await getSettings();
+      // Check for combo-specific strategy first, fallback to global
+      const comboStrategies = chatSettings.comboStrategies || {};
+      const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
+      const comboStrategy = comboSpecificStrategy || chatSettings.comboStrategy || "fallback";
+      const requiredCapabilities = detectRequiredCapabilities(body);
+      // Nested combo (a combo member that is itself a combo): the access decision
+      // was made on the outer target; only drop adapter models the key may not call.
+      const keyAccess = await getKeyAccessContext(request);
+      const augmentedModels = await filterAdapterModels(keyAccess, augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, chatSettings), comboModels);
+      const adapterAdded = augmentedModels.filter((m) => !comboModels.includes(m));
+
+      if (comboStrategy === "fusion") {
+        log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: fusion)`);
+        return handleFusionChat({
+          body,
+          models: comboModels,
+          handleSingleModel: (b, m, isPanel) => {
+            let cleanRawReq = clientRawRequest;
+            if (isPanel && clientRawRequest) {
+              const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
+              cleanRawReq = { ...clientRawRequest, body: cleanBody };
+            }
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, dashboardPayloadOverride, requestedModel);
+          },
+          log,
+          comboName: modelStr,
+          judgeModel: comboStrategies[modelStr]?.judgeModel,
+          tuning: comboStrategies[modelStr]?.fusionTuning,
+        });
+      }
+
+      const comboStickyLimit = chatSettings.comboStickyRoundRobinLimit;
+      const comboCfg = comboStrategies[modelStr] || {};
+      const nestedSession = resolveSessionIdentity({ headers: clientRawRequest?.headers, body });
+      const nestedSessionId = nestedSession?.sessionId || null;
+      log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
+      return handleComboChat({
+        body,
+        models: augmentedModels,
+        handleSingleModel: withCapacityAdapterStripping(
+          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, dashboardPayloadOverride, requestedModel),
+          adapterAdded
+        ),
+        log,
+        comboName: modelStr,
+        comboStrategy,
+        comboStickyLimit,
+        sessionId: nestedSessionId,
+        smartPolicy: comboCfg.smartPolicy || "smart",
+        sessionSticky: comboCfg.sessionSticky !== false,
+        confidenceThreshold: typeof comboCfg.confidenceThreshold === "number" ? comboCfg.confidenceThreshold : 0.8,
+        resolveSmartChoice: comboStrategy === "smart"
+          ? (b, m) => resolveSmartChoice({
+              body: b,
+              models: m,
+              routerModel: comboCfg.routerModel,
+              log,
+            })
+          : null,
+      });
+    }
+    log.warn("CHAT", "Invalid model format", { model: modelStr });
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
+  }
+
+  const { provider, model } = modelInfo;
+
+  // Routing shown in the unified "▶" line (client model → provider/model)
+
+  // Extract userAgent from request
+  const userAgent = request?.headers?.get("user-agent") || "";
+
+  // Try with available accounts (fallback on errors)
+  const excludeConnectionIds = new Set();
+  let lastError = null;
+  let lastStatus = null;
+  let lastHeaders = null;
+
+  while (true) {
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { requestedModel: requestedModel || model });
+
+    // All accounts unavailable
+    if (!credentials || credentials.allRateLimited) {
+      if (credentials?.allRateLimited) {
+        const errorMsg = lastError || credentials.lastError || "Unavailable";
+        const status = HTTP_STATUS.SERVICE_UNAVAILABLE;
+        log.warn("CHAT", `[${provider}/${model}] ${errorMsg} (${credentials.retryAfterHuman})`);
+        return unavailableResponse(status, `[${provider}/${model}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman, lastHeaders);
+      }
+      if (excludeConnectionIds.size === 0) {
+        log.warn("AUTH", `No active credentials for provider: ${provider}`);
+        return errorResponse(HTTP_STATUS.NOT_FOUND, `No active credentials for provider: ${provider}`);
+      }
+      log.warn("CHAT", "No more accounts available", { provider });
+      return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable", lastHeaders);
+    }
+
+    // Account selection shown in the unified "▶" line (acc:...)
+    const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
+
+    // Ensure real project ID is available for providers that need it (P0 fix: cold miss)
+    if ((provider === "antigravity" || provider === "gemini-cli") && !refreshedCredentials.projectId) {
+      const pid = await getProjectIdForConnection(credentials.connectionId, refreshedCredentials.accessToken, provider);
+      if (pid) {
+        refreshedCredentials.projectId = pid;
+        // Persist to DB in background so subsequent requests have it immediately
+        updateProviderCredentials(credentials.connectionId, { projectId: pid }).catch(() => { });
+      }
+    }
+
+    // Use shared chatCore
+    const chatSettings = await getSettings();
+    const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
+    const result = await handleChatCore({
+      body: { ...body, model: `${provider}/${model}` },
+      modelInfo: { provider, model },
+      credentials: refreshedCredentials,
+      log,
+      clientRawRequest,
+      connectionId: credentials.connectionId,
+      userAgent,
+      apiKey,
+      ccFilterNaming: !!chatSettings.ccFilterNaming,
+      rtkEnabled: !!chatSettings.rtkEnabled,
+      headroomEnabled: !!chatSettings.headroomEnabled,
+      headroomUrl: chatSettings.headroomUrl || DEFAULT_HEADROOM_URL,
+      headroomCompressUserMessages: !!chatSettings.headroomCompressUserMessages,
+      headroomTimeoutMs: parseInt(chatSettings.headroomTimeoutMs, 10) || 10000,
+      cavemanEnabled: !!chatSettings.cavemanEnabled,
+      cavemanLevel: chatSettings.cavemanLevel || "full",
+      ponytailEnabled: !!chatSettings.ponytailEnabled,
+      ponytailLevel: chatSettings.ponytailLevel || "full",
+      // Unified global injection: one master toggle drives both the
+      // register prompt (Plinian-style) and the G0DM0D3 payload.
+      // Backward-compat: if the new key is unset but the old
+      // plinian*/godmode* keys are present, inherit their values so
+      // existing persisted settings still work.
+      injectionEnabled: dashboardPayloadOverride
+        ? true
+        : chatSettings.injectionEnabled !== undefined
+          ? !!chatSettings.injectionEnabled
+          : (!!chatSettings.plinianEnabled || !!chatSettings.godmodeEnabled),
+      injectionRegisterLevel: chatSettings.injectionRegisterLevel
+        || chatSettings.plinianLevel
+        || "standard",
+      injectionIdentity: typeof chatSettings.injectionIdentity === "string"
+        ? chatSettings.injectionIdentity
+        : (chatSettings.plinianIdentity || ""),
+      injectionRegisterCustom: typeof chatSettings.injectionRegisterCustom === "string"
+        ? chatSettings.injectionRegisterCustom
+        : "",
+      // A dashboard A/B payload override (developer relay's _injectPayload)
+      // rides regardless of the global injectionEnabled flag — the user
+      // explicitly asked for this payload in the A/B test. The override
+      // force-selects level "custom" so godmodeCustom is what ships.
+      injectionGodmodeLevel: dashboardPayloadOverride
+        ? "custom"
+        : chatSettings.injectionGodmodeLevel ||
+          chatSettings.godmodeLevel ||
+          "classic",
+      injectionGodmodeCustom: dashboardPayloadOverride
+        ? dashboardPayloadOverride
+        : typeof chatSettings.injectionGodmodeCustom === "string"
+          ? chatSettings.injectionGodmodeCustom
+          : (typeof chatSettings.godmodeCustom === "string" ? chatSettings.godmodeCustom : ""),
+      // v0.6.0 rework: the carrier warp now lives in injectionIdentity
+      // (the Persona textarea). The legacy injectionCarrier* keys are
+      // passed through for one migration window — globalInject.js reads
+      // them as a fallback when the persona text has no slot marker yet.
+      // After the UI migrates the legacy keys to the persona text on mount,
+      // these become inert.
+      injectionCarrierEnabled: !!chatSettings.injectionCarrierEnabled,
+      injectionCarrierLevel:
+        (typeof chatSettings.injectionCarrierLevel === "string" && chatSettings.injectionCarrierLevel) || "",
+      injectionCarrierCustom:
+        typeof chatSettings.injectionCarrierCustom === "string" ? chatSettings.injectionCarrierCustom : "",
+      injectionSkillRouterCustom:
+        typeof chatSettings.injectionSkillRouterCustom === "string" ? chatSettings.injectionSkillRouterCustom : "",
+      // Upstream v0.5.111: user-authored system prompt, independent of the built-in savers.
+      customPromptEnabled: !!chatSettings.customPromptEnabled,
+      customPrompt: chatSettings.customPrompt || "",
+      pxpipeEnabled: !!chatSettings.pxpipeEnabled,
+      pxpipeMinChars: chatSettings.pxpipeMinChars,
+      pxpipeTimeoutMs: chatSettings.pxpipeTimeoutMs,
+      // Lazily warms the in-process module on first use; null when not installed (fail-open)
+      pxpipeTransform: chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null,
+      onPxpipeEvent: appendPxpipeEvent,
+      providerThinking,
+      // Per-provider user overrides (custom headers / connect timeout) from settings
+      providerOverrides: (chatSettings.providerOverrides || {})[provider] || null,
+      // Detect source format by endpoint + body
+      sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,
+      onCredentialsRefreshed: async (newCreds) => {
+        await updateProviderCredentials(credentials.connectionId, {
+          ...newCreds,
+          existingProviderSpecificData: credentials.providerSpecificData,
+          testStatus: "active"
+        });
+      },
+      onRequestSuccess: async () => {
+        await clearAccountError(credentials.connectionId, credentials, model);
+        // "Consecutive" strikes: a success clears the breaker for this pair.
+        clearAntigravityStrikes(credentials.connectionId, model);
+      }
+    });
+
+    if (result.success) return result.response;
+
+    // Antigravity 409/429: refresh live quota to get exact resetAt before locking
+    let quotaResetMs = null;
+    let resetsAtMs = result.resetsAtMs;
+    if (provider === "antigravity" && (result.status === 409 || result.status === 429)) {
+      quotaResetMs = await handleAntigravityQuotaError(
+        credentials.connectionId, result.status, model,
+        refreshedCredentials.accessToken, credentials.providerSpecificData
+      );
+      if (quotaResetMs) resetsAtMs = quotaResetMs;
+    }
+
+    // Exhausted Antigravity model is blocked only in RAM cache until upstream resetAt.
+    // Do not persist a modelLock_* for this path.
+    const shouldFallback = provider === "antigravity" && quotaResetMs
+      ? true
+      : (await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, resetsAtMs)).shouldFallback;
+
+    if (shouldFallback) {
+      log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);
+      excludeConnectionIds.add(credentials.connectionId);
+      lastError = result.error;
+      lastStatus = result.status;
+      lastHeaders = upstreamResponseHeaders(result.response?.headers);
+      continue;
+    }
+
+    return result.response;
+  }
+}

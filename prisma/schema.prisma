@@ -31,6 +31,20 @@ model TelegramConfig {
   updatedAt   DateTime @updatedAt
 }
 
+// Konfigurasi Integrasi 9Router AI Gateway
+model NineRouterConfig {
+  id            String    @id @default("default")
+  baseUrl       String    @default("http://localhost:20128/v1")
+  apiKey        String?
+  defaultModel  String?
+  isEnabled     Boolean   @default(true)
+  notes         String?
+  lastCheckedAt DateTime?
+  lastStatus    String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
 // 2. Master Vendor / Rekanan Supplier
 model Vendor {
   id        String   @id @default(cuid())

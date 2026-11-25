@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "next dev -p 3001",
     "build": "next build",
-    "start": "next start -p 3001"
+    "start": "next start -p 3001",
+    "router:install": "npm --prefix 9router install",
+    "router:dev": "cd 9router && HOSTNAME=0.0.0.0 PORT=20128 BASE_URL=http://localhost:20128 NEXT_PUBLIC_BASE_URL=http://localhost:20128 ./node_modules/.bin/next dev --webpack -H 0.0.0.0 -p 20128"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",

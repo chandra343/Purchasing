@@ -1,0 +1,77 @@
+// Aggregate token-cost estimator for injected steering payloads.
+//
+// Why an estimate: tokenizers differ per model family (GPT-5 cl100k/
+// o200k, Claude ~chars/3.5, Gemma-2a ~chars/2.5, K2/kimi in between),
+// so a single number is only ever an estimate. The aggregate is the
+// number that actually matters for cost — per-payload rows are shown
+// with the same approximation, marked "est" everywhere they surface.
+//
+// Heuristic: ~4 chars/token aggregate, matching the pxpipe profitability
+// gate (open-sse/rtk/pxpipe.js EST_CHARS_PER_TOKEN). Deliberately no
+// tokenizer dependency — this runs on the hot request path.
+
+const EST_CHARS_PER_TOKEN = 4;
+
+export function estimateTokens(text) {
+  if (typeof text !== "string" || !text.length) return 0;
+  return Math.max(1, Math.round(text.length / EST_CHARS_PER_TOKEN));
+}
+
+// Compact "1.2k" / "340" form for log lines and UI badges.
+export function formatTok(n) {
+  if (!n) return "0";
+  return n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k` : String(n);
+}
+
+// Aggregate estimate of the Global Injection payload set, independent of
+// any request: register (plinian preset or custom) + identity + godmode
+// variant. Same text selection as injectGlobal() in globalInject.js.
+import { getPlinianPrompt } from "../payload/plinianPrompts.js";
+import { getGodmodePrompt } from "../payload/godmodePayloads.js";
+import { getExternalPayload } from "../payload/jailbreakPayloads.js";
+import { CARRIER_SLOT, spliceCarrier } from "../payload/payloadCatalog.js";
+
+export function estimateGlobalInjection({
+  registerLevel = "standard",
+  registerCustom = "",
+  identity = "",
+  godmodeLevel = "classic",
+  godmodeCustom = "",
+  carrierEnabled = false,
+  carrierLevel = "",
+  carrierCustom = "",
+} = {}) {
+  const regText = registerCustom ? registerCustom : getPlinianPrompt(registerLevel);
+  const reg = `${String(identity || "").trim()}\n\n${regText}`.trim();
+  // Mirror injectGodmode(): the selected level is what ships — no per-model
+  // routing exists any more, so the estimate follows the user's choice.
+  const effectiveLevel = godmodeLevel || "classic";
+  const god = getGodmodePrompt(effectiveLevel, godmodeCustom);
+  // Mirror injectGlobal() v0.6.0 rework: the carrier warp now lives inside
+  // the persona text (identity). When identity carries the [YOUR JAILBREAK
+  // HERE] slot, the main payload auto-splices into it; otherwise the legacy
+  // carrier column (migration window only) is used; otherwise bare payload.
+  const identityTrimmed = String(identity || "").trim();
+  const carrierWarp = identityTrimmed.includes(CARRIER_SLOT);
+  const legacyCarrierOn =
+    !carrierWarp &&
+    carrierEnabled &&
+    (carrierCustom.trim() || carrierLevel);
+  const carrierText = carrierWarp
+    ? identityTrimmed
+    : legacyCarrierOn
+      ? (carrierCustom.trim() || getExternalPayload(carrierLevel) || "")
+      : "";
+  const finalPayload = carrierText
+    ? spliceCarrier(carrierText, god)
+    : god;
+  const finalCarrier = carrierText || "";
+  return {
+    register: estimateTokens(reg),
+    payload: estimateTokens(god),
+    total: estimateTokens(reg + "\n\n" + finalPayload),
+    effectiveLevel,
+    carrier: finalCarrier ? estimateTokens(finalCarrier) : 0,
+    carrierSpliced: !!(finalCarrier && finalCarrier.includes(CARRIER_SLOT)),
+  };
+}

@@ -17,6 +17,8 @@ import {
   updateStaffTelegram,
   updateTelegramBotConfig,
   testStaffTelegramNotification,
+  saveNineRouterConfig,
+  testNineRouterConnection,
 } from "@/app/actions";
 import {
   ShoppingCart,
@@ -67,8 +69,10 @@ import {
   Award,
   Zap,
   Layers,
+  Cpu,
 } from "lucide-react";
 import LocationMapEmbed from "./LocationMapEmbed";
+import NineRouterModal from "./NineRouterModal";
 
 export interface CurrentStaff {
   id: string;
@@ -200,6 +204,29 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
   const [botUsernameInput, setBotUsernameInput] = useState<string>(initialData?.telegramConfig?.botUsername || "");
   const [botActiveInput, setBotActiveInput] = useState<boolean>(initialData?.telegramConfig?.isActive ?? true);
   const [isSavingBotConfig, setIsSavingBotConfig] = useState<boolean>(false);
+
+  // Integrasi 9Router AI Gateway
+  const [showNineRouterModal, setShowNineRouterModal] = useState<boolean>(false);
+  const [nineRouterStatus, setNineRouterStatus] = useState<{
+    connected: boolean;
+    modelsCount?: number;
+  }>({
+    connected: initialData?.nineRouterConfig?.lastStatus === "CONNECTED",
+  });
+
+  useEffect(() => {
+    fetch("/api/ai/status")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d?.nineRouter) {
+          setNineRouterStatus({
+            connected: Boolean(d.nineRouter.connected),
+            modelsCount: d.nineRouter.modelsCount || 0,
+          });
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Form State Buat PO Baru (Mendukung Multi-Item Keranjang)
   interface NewPoFormState {
@@ -1570,6 +1597,34 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
               <span className="text-[10px] bg-emerald-200 text-emerald-900 font-mono px-1.5 py-0.5 rounded font-bold">
                 pajak.go.id
               </span>
+            </button>
+
+            {/* Pill Integrasi 9Router AI Gateway */}
+            <button
+              type="button"
+              onClick={() => setShowNineRouterModal(true)}
+              className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition shadow-xs border ${
+                nineRouterStatus.connected
+                  ? "bg-violet-50 hover:bg-violet-100 border-violet-300 text-violet-900"
+                  : "bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700"
+              }`}
+              title="Pengaturan & Status 9Router AI Gateway (Port 20128)"
+            >
+              <Cpu
+                className={`w-3.5 h-3.5 shrink-0 ${
+                  nineRouterStatus.connected ? "text-violet-600" : "text-slate-400"
+                }`}
+              />
+              <span className="hidden lg:inline">9Router AI</span>
+              {nineRouterStatus.connected ? (
+                <span className="text-[10px] bg-violet-200 text-violet-900 font-bold px-1.5 py-0.5 rounded">
+                  Aktif
+                </span>
+              ) : (
+                <span className="text-[10px] bg-amber-100 text-amber-800 font-bold px-1.5 py-0.5 rounded">
+                  Hubungkan
+                </span>
+              )}
             </button>
 
             {/* Pill Integrasi Telegram ID Card */}
@@ -6796,6 +6851,18 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
           </div>
         </div>
       )}
+      {/* MODAL INTEGRASI 9ROUTER AI GATEWAY */}
+      <NineRouterModal
+        isOpen={showNineRouterModal}
+        onClose={() => setShowNineRouterModal(false)}
+        projectLabel="Purchasing"
+        localPort={3001}
+        initialConfig={initialData?.nineRouterConfig}
+        onStatusUpdated={setNineRouterStatus}
+        onSaveConfigAction={saveNineRouterConfig}
+        onTestConnectionAction={testNineRouterConnection}
+        onToast={showMessage}
+      />
     </div>
   );
 }

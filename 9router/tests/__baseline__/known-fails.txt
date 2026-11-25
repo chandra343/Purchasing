@@ -1,0 +1,8 @@
+# Known-failing tests (relative path :: suite :: test name), one per line.
+# The verify-no-regression.mjs gate fails when a test listed here passes in CI
+# (stale entry) or when any NEW test fails (regression).
+#
+# Empty as of the 0.5.60 fork sync: every upstream known-fail was either fixed
+# (translator flattening, parseSSELine NDJSON, rtk, claude-header-forwarding) or
+# its test was rewritten to match the current implementation
+# (oauth-cursor-auto-import). Keep this list empty and the gate strict.

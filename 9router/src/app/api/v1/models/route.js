@@ -1,0 +1,1027 @@
+import { PROVIDER_MODELS, PROVIDER_ID_TO_ALIAS, getModelKind } from "@/shared/constants/models";
+import {
+  ALIAS_TO_ID,
+  AI_PROVIDERS,
+  FREE_PROVIDERS,
+  getProviderAlias,
+  isAnthropicCompatibleProvider,
+  isOpenAICompatibleProvider,
+} from "@/shared/constants/providers";
+import { getProviderConnections, getCombos, getCustomModels, getModelAliases, getProviderNodes } from "@/lib/localDb";
+import { getDisabledModels } from "@/lib/disabledModelsDb";
+import { getKeyAccessContext, filterModelsListForKey } from "@/sse/services/keyAccess.js";
+import { resolveKiroModels } from "open-sse/services/kiroModels.js";
+import { resolveKimchiModels } from "open-sse/services/kimchiModels.js";
+import { resolveQoderModels, routableQoderModels } from "open-sse/services/qoderModels.js";
+import { resolveCopilotModels } from "open-sse/services/copilotModels.js";
+import { resolveClinepassModels, resolveClineModels } from "open-sse/services/clinepassModels.js";
+import { resolveGrokCliModels } from "open-sse/services/grokCliModels.js";
+import { resolveCursorModels } from "open-sse/services/cursorModels.js";
+import { resolveZedModels } from "open-sse/shared/zedAuth.js";
+import { resolveCommandCodeModels } from "open-sse/services/commandcodeModels.js";
+import { updateProviderCredentials } from "@/sse/services/tokenRefresh";
+import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
+import { capabilitiesFromServiceKind, getCapabilitiesForModel, aggregateComboCapabilities } from "open-sse/providers/capabilities.js";
+import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
+
+// noAuth free providers (no DB connection row, but exposed in /v1/models) ──
+// These providers ship their catalog via a static fetch endpoint + a filter,
+// not through a user-supplied API key. They are always "active" when the
+// matching kind is requested. `skipDynamicFetch` short-circuits the remote
+// call so cross-instance recursive /models fetches fall back to the static
+// PROVIDER_MODELS list.
+// Live catalogs are memoized per provider so a refetch (tab focus, reconnect)
+// doesn't re-hit every upstream; 60s is short enough that a newly published
+// free model still shows up quickly.
+const NOAUTH_CACHE_TTL_MS = 60_000;
+const noAuthCatalogCache = new Map();
+
+// Live provider catalogs are fetched from upstream on every call, which measured
+// ~835 ms of the ~890 ms this endpoint takes (the rest — DB reads plus capability
+// aggregation over ~6.4k models — is ~53 ms). Memoize the built list so clients
+// polling /v1/models on connect stop paying that on every call.
+//
+// The cache key carries a fingerprint of everything that shapes the list, so
+// adding/removing a provider or model invalidates it immediately; the TTL only
+// bounds how long an upstream-published model can stay invisible.
+const MODELS_LIST_TTL_MS = Number(process.env.MODELS_LIST_TTL_MS) > 0
+  ? Number(process.env.MODELS_LIST_TTL_MS)
+  : 60_000;
+const MODELS_LIST_CACHE_MAX = 32;
+const modelsListCache = new Map();
+
+function modelsListFingerprint({ connections, nodes, combos, customModels, modelAliases, disabledByAlias }) {
+  const parts = [];
+  for (const c of connections) parts.push(`${c.id}:${c.provider}:${c.updatedAt}`);
+  for (const n of nodes) parts.push(`${n.id}:${n.type}:${n.updatedAt}`);
+  for (const c of combos) parts.push(`${c.id}:${c.updatedAt}`);
+  for (const m of customModels) parts.push(`${m.providerAlias}|${m.id}:${m.type || m.kind || "llm"}`);
+  parts.push(JSON.stringify(modelAliases || {}));
+  parts.push(JSON.stringify(disabledByAlias || {}));
+  return parts.join("|");
+}
+
+
+const NOAUTH_RESOLVERS = {
+  opencode: async () => {
+    try {
+      const res = await fetch("https://opencode.ai/zen/v1/models", {
+        headers: { "Accept": "application/json" },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      const rawModels = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+      // Mirror the dashboard "opencode-free" filter: -free suffix or KNOWN list,
+      // minus dead ids.
+      const KNOWN_FREE = ["big-pickle"];
+      const DEAD = new Set(["deepseek-v4-flash-free"]);
+      const free = rawModels
+        .filter((m) => (m?.id?.endsWith("-free") || KNOWN_FREE.includes(m?.id)) && !DEAD.has(m?.id))
+        .map((m) => ({ id: m.id, name: m.id }));
+      return free.length ? { models: free } : null;
+    } catch {
+      return null;
+    }
+  },
+};
+
+// Qoder shares one live resolver across intl (qoder) and CN (qoder-cn); the
+// credentials carry the provider id so qoderModels picks the right region's
+// catalog endpoint.
+async function resolveQoderLiveModels(conn, provider) {
+  const result = await resolveQoderModels({
+    provider,
+    accessToken: conn.accessToken,
+    // PAT (pt-...) connections keep the token in apiKey; without it the live
+    // catalog silently fails and /v1/models falls back to the static list.
+    apiKey: conn.apiKey,
+    refreshToken: conn.refreshToken,
+    email: conn.email,
+    displayName: conn.displayName,
+    providerSpecificData: conn.providerSpecificData || {}
+  });
+  // Visible + hidden (enable:false) catalog keys — chat routes all of them.
+  const models = routableQoderModels(result);
+  if (!models.length) return null;
+  return { models: models.map((m) => ({ id: m.id, name: m.name })) };
+}
+
+// Combo seats use UI aliases; the model registry also has transport aliases.
+// Capability overrides and catalog limits are keyed by provider id.
+const ALIAS_TO_PROVIDER_ID = {
+  ...Object.fromEntries(
+    Object.entries(PROVIDER_ID_TO_ALIAS).map(([id, alias]) => [alias, id])
+  ),
+  ...ALIAS_TO_ID,
+};
+
+function comboSeatCapabilities(seat) {
+  const slash = seat.indexOf("/");
+  if (slash <= 0) return null;
+  const alias = seat.slice(0, slash);
+  return getCapabilitiesForModel(ALIAS_TO_PROVIDER_ID[alias] || alias, seat.slice(slash + 1));
+}
+
+// Per-provider live model resolvers. Each receives a connection record and
+// returns { models: [{ id, name? }, ...] } | null on failure.
+// Adding a provider here makes /v1/models prefer the live catalog for it.
+const LIVE_MODEL_RESOLVERS = {
+  kiro: async (conn) => {
+    const result = await resolveKiroModels({
+      accessToken: conn.accessToken,
+      refreshToken: conn.refreshToken,
+      providerSpecificData: conn.providerSpecificData || {}
+    }, { log: console });
+    return result?.models?.length ? { models: result.models } : null;
+  },
+  qoder: async (conn) => resolveQoderLiveModels(conn, "qoder"),
+  "qoder-cn": async (conn) => resolveQoderLiveModels(conn, "qoder-cn"),
+  kimchi: async (conn) => {
+    const result = await resolveKimchiModels({
+      accessToken: conn.accessToken,
+      apiKey: conn.apiKey,
+      providerSpecificData: conn.providerSpecificData || {}
+    }, { log: console });
+    return result?.models?.length ? { models: result.models } : null;
+  },
+  github: async (conn) => {
+    const result = await resolveCopilotModels({
+      accessToken: conn.accessToken,
+      refreshToken: conn.refreshToken,
+      providerSpecificData: conn.providerSpecificData || {}
+    }, {
+      log: console,
+      onCredentialsRefreshed: async (refreshed) => {
+        await updateProviderCredentials(conn.id, {
+          copilotToken: refreshed.copilotToken,
+          copilotTokenExpiresAt: refreshed.copilotTokenExpiresAt,
+          existingProviderSpecificData: conn.providerSpecificData || {},
+        });
+      },
+    });
+    return result?.models?.length ? { models: result.models } : null;
+  },
+  clinepass: async (conn) => {
+    const result = await resolveClinepassModels(
+      { accessToken: conn.accessToken, apiKey: conn.apiKey },
+      { enabledModels: conn?.providerSpecificData?.enabledModels },
+    );
+    return result?.models?.length ? { models: result.models } : null;
+  },
+  cline: async (conn) => {
+    const result = await resolveClineModels(
+      { accessToken: conn.accessToken, apiKey: conn.apiKey },
+      { enabledModels: conn?.providerSpecificData?.enabledModels },
+    );
+    return result?.models?.length ? { models: result.models } : null;
+  },
+  "grok-cli": async (conn) => {
+    const proxy = await resolveConnectionProxyConfig(conn.providerSpecificData || {});
+    const result = await resolveGrokCliModels({
+      ...conn,
+      connectionId: conn.id,
+    }, {
+      log: console,
+      proxyOptions: {
+        connectionProxyEnabled: proxy.connectionProxyEnabled === true,
+        connectionProxyUrl: proxy.connectionProxyUrl || "",
+        connectionNoProxy: proxy.connectionNoProxy || "",
+        vercelRelayUrl: proxy.vercelRelayUrl || "",
+        strictProxy: proxy.strictProxy === true,
+      },
+      onCredentialsRefreshed: async (refreshed) => {
+        await updateProviderCredentials(conn.id, {
+          ...refreshed,
+          existingProviderSpecificData: conn.providerSpecificData || {},
+        });
+      },
+    });
+    return result?.models?.length ? { models: result.models } : null;
+  },
+  cursor: async (conn) => {
+    const result = await resolveCursorModels({
+      accessToken: conn.accessToken,
+      providerSpecificData: conn.providerSpecificData || {},
+    }, { log: console });
+    return result?.models?.length ? { models: result.models } : null;
+  },
+  zed: async (conn) => {
+    const result = await resolveZedModels({
+      accessToken: conn.accessToken,
+      providerSpecificData: conn.providerSpecificData || {},
+    });
+    if (!result?.models?.length) return null;
+    return {
+      models: result.models
+        .filter((m) => !m.isDisabled)
+        .map((m) => ({
+          id: m.id,
+          name: m.name,
+          capabilities: m.supportsTools ? { tools: true } : undefined,
+        })),
+    };
+  },
+  // CommandCode's catalog is public and account-independent, so no per-connection
+  // credentials are needed — the connection only has to exist and be active.
+  commandcode: async () => {
+    const result = await resolveCommandCodeModels();
+    if (!result?.models?.length) return null;
+    return { models: result.models.map(({ id, name }) => ({ id, name })) };
+  },
+};
+
+const parseOpenAIStyleModels = (data) => {
+  if (Array.isArray(data)) return data;
+  return data?.data || data?.models || data?.results || [];
+};
+
+// Header sent by fetchCompatibleModelIds to detect cross-instance /models fetches
+// and break recursive loops between 9router instances connected to each other.
+const INTERNAL_MODELS_FETCH_HEADER = "x-9r-internal-models-fetch";
+
+// LLM kind sentinel — combos/models with no explicit kind default to LLM
+const LLM_KIND = "llm";
+
+// Map per-model `type` field (in PROVIDER_MODELS) to service kind.
+// Models without `type` are treated as LLM.
+const MODEL_TYPE_TO_KIND = {
+  image: "image",
+  tts: "tts",
+  embedding: "embedding",
+  stt: "stt",
+  imageToText: "imageToText",
+  video: "video",
+};
+
+function modelKind(model) {
+  const k = model?.kind || model?.type;
+  if (!k) return LLM_KIND;
+  return MODEL_TYPE_TO_KIND[k] || LLM_KIND;
+}
+
+// For dynamic/unknown model IDs (compatible providers, alias map, custom models)
+// fall back to provider-level kind matching when per-model type is unavailable.
+function inferKindFromUnknownModelId(modelId) {
+  const lower = String(modelId).toLowerCase();
+  if (/embed/.test(lower)) return "embedding";
+  if (/tts|speech|audio|voice/.test(lower)) return "tts";
+  // video before image: some ids (e.g. "image-to-video") match both — video wins.
+  if (/video|film|clip|animate/.test(lower)) return "video";
+  if (/image|imagen|dall-?e|flux|sdxl|sd-|stable-diffusion|banana|pic/.test(lower)) return "image";
+  return LLM_KIND;
+}
+
+async function fetchCompatibleModelIds(connection) {
+  if (!connection?.apiKey) return [];
+
+  const baseUrl = typeof connection?.providerSpecificData?.baseUrl === "string"
+    ? connection.providerSpecificData.baseUrl.trim().replace(/\/$/, "")
+    : "";
+
+  if (!baseUrl) return [];
+
+  let url = `${baseUrl}/models`;
+  const headers = {
+    "Content-Type": "application/json",
+  };
+
+  if (isOpenAICompatibleProvider(connection.provider)) {
+    headers.Authorization = `Bearer ${connection.apiKey}`;
+  } else if (isAnthropicCompatibleProvider(connection.provider)) {
+    if (url.endsWith("/messages/models")) {
+      url = url.slice(0, -9);
+    } else if (url.endsWith("/messages")) {
+      url = `${url.slice(0, -9)}/models`;
+    }
+    headers["x-api-key"] = connection.apiKey;
+    headers["anthropic-version"] = "2023-06-01";
+    headers.Authorization = `Bearer ${connection.apiKey}`;
+  } else {
+    return [];
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const response = await fetch(url, {
+      method: "GET",
+      headers: { ...headers, [INTERNAL_MODELS_FETCH_HEADER]: "1" },
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (!response.ok) return [];
+
+    const data = await response.json();
+    const rawModels = parseOpenAIStyleModels(data);
+
+    return Array.from(
+      new Set(
+        rawModels
+          .map((model) => model?.id || model?.name || model?.model)
+          .filter((modelId) => typeof modelId === "string" && modelId.trim() !== "")
+      )
+    );
+  } catch {
+    return [];
+  }
+}
+
+// Provider matches kindFilter when its serviceKinds intersect the requested kinds.
+// LLM is the default kind for providers missing serviceKinds.
+function providerMatchesKinds(providerId, kindFilter, customNodeKinds = {}) {
+  const provider = AI_PROVIDERS[providerId];
+  const registryKinds = Array.isArray(provider?.serviceKinds) && provider.serviceKinds.length > 0
+    ? provider.serviceKinds
+    : null;
+  // Custom nodes (openai-compatible / anthropic-compatible / custom-embedding)
+  // are not in AI_PROVIDERS — fall back to their DB serviceKinds. Chat-type
+  // nodes always expose llm; embedding nodes expose embedding by default.
+  const kinds = registryKinds
+    || customNodeKinds[providerId]
+    || [LLM_KIND];
+  return kindFilter.some((k) => kinds.includes(k));
+}
+
+// Combo matches kindFilter when its `kind` field is in the list.
+// Combos with no kind are treated as LLM.
+function comboMatchesKinds(combo, kindFilter) {
+  const kind = combo?.kind || LLM_KIND;
+  return kindFilter.includes(kind);
+}
+
+// Nested combo names are valid seats — the model selector exposes them and
+// chat routing resolves them recursively — but a no-slash seat is otherwise
+// treated as a literal model and publishes the 200k floor. Expand nested
+// names (cycle-guarded) so the published window is the true min across the
+// whole chain.
+function comboSeatLimits(combo, combosByName, visiting = new Set()) {
+  const name = typeof combo?.name === "string" ? combo.name : null;
+  if (name) {
+    if (visiting.has(name)) return { contextWindow: undefined, maxOutput: undefined };
+    visiting.add(name);
+  }
+
+  let contextWindow = Infinity;
+  let maxOutput = Infinity;
+  try {
+    for (const seat of Array.isArray(combo?.models) ? combo.models : []) {
+      if (typeof seat !== "string") continue;
+      const slash = seat.indexOf("/");
+      if (slash <= 0) {
+        const nested = combosByName.get(seat);
+        if (nested) {
+          const nestedLimits = comboSeatLimits(nested, combosByName, visiting);
+          if (Number.isFinite(nestedLimits.contextWindow)) contextWindow = Math.min(contextWindow, nestedLimits.contextWindow);
+          if (Number.isFinite(nestedLimits.maxOutput)) maxOutput = Math.min(maxOutput, nestedLimits.maxOutput);
+          continue;
+        }
+      }
+      const caps = comboSeatCapabilities(seat) || getCapabilitiesForModel(null, seat);
+      if (Number.isFinite(caps?.contextWindow)) contextWindow = Math.min(contextWindow, caps.contextWindow);
+      if (Number.isFinite(caps?.maxOutput)) maxOutput = Math.min(maxOutput, caps.maxOutput);
+    }
+  } finally {
+    if (name) visiting.delete(name);
+  }
+
+  return {
+    contextWindow: Number.isFinite(contextWindow) ? contextWindow : undefined,
+    maxOutput: Number.isFinite(maxOutput) ? maxOutput : undefined,
+  };
+}
+
+/**
+ * Build OpenAI-format models list filtered by service kinds.
+ * @param {string[]} kindFilter - List of service kinds to include (e.g. ["llm"], ["webSearch","webFetch"]).
+ */
+export async function buildModelsList(kindFilter, options = {}) {
+  // When this header is present, the /v1/models request came from another
+  // 9router instance's fetchCompatibleModelIds — skip dynamic fetch to break
+  // cross-instance recursive loops.
+  const skipDynamicFetch = options.skipDynamicFetch === true;
+  let connections = [];
+  try {
+    connections = await getProviderConnections();
+    connections = connections.filter(c => c.isActive !== false);
+  } catch (e) {
+    console.log("Could not fetch providers, returning all models");
+  }
+
+  // Custom node kinds: not in AI_PROVIDERS, so providerMatchesKinds would
+  // otherwise default them to llm-only and hide their image/tts/etc models.
+  let customNodeKinds = {};
+  let providerNodes = [];
+  try {
+    providerNodes = await getProviderNodes();
+    for (const node of providerNodes) {
+      if (!node?.id) continue;
+      const extra = Array.isArray(node.serviceKinds) ? node.serviceKinds : [];
+      customNodeKinds[node.id] = node.type === "custom-embedding"
+        ? (extra.length > 0 ? extra : ["embedding"])
+        : ["llm", ...extra];
+    }
+  } catch (e) {
+    console.log("Could not fetch provider nodes for kind filter");
+  }
+
+  let combos = [];
+  try {
+    combos = await getCombos();
+  } catch (e) {
+    console.log("Could not fetch combos");
+  }
+
+  let customModels = [];
+  try {
+    customModels = await getCustomModels();
+  } catch (e) {
+    console.log("Could not fetch custom models");
+  }
+
+  let modelAliases = {};
+  try {
+    modelAliases = await getModelAliases();
+  } catch (e) {
+    console.log("Could not fetch model aliases");
+  }
+
+  let disabledByAlias = {};
+  try {
+    disabledByAlias = await getDisabledModels();
+  } catch (e) {
+    console.log("Could not fetch disabled models");
+  }
+  const isDisabled = (alias, modelId) => Array.isArray(disabledByAlias[alias]) && disabledByAlias[alias].includes(modelId);
+
+  // Everything above is cheap (SQLite reads). Everything below fans out to live
+  // upstream catalogs and rebuilds capabilities for the whole catalog — so serve
+  // it from the memo when nothing that shapes the list has changed.
+  const nodesForFingerprint = providerNodes;
+  const listCacheKey = [
+    Array.isArray(kindFilter) ? kindFilter.join(",") : String(kindFilter),
+    skipDynamicFetch ? "1" : "0",
+    modelsListFingerprint({
+      connections,
+      nodes: nodesForFingerprint,
+      combos,
+      customModels,
+      modelAliases,
+      disabledByAlias,
+    }),
+  ].join("\u0001");
+  const cachedList = modelsListCache.get(listCacheKey);
+  if (cachedList && Date.now() - cachedList.at < MODELS_LIST_TTL_MS) {
+    return [...cachedList.value];
+  }
+
+
+  const activeConnectionByProvider = new Map();
+  for (const conn of connections) {
+    if (!activeConnectionByProvider.has(conn.provider)) {
+      activeConnectionByProvider.set(conn.provider, conn);
+    }
+  }
+
+  // ── Combo health ──────────────────────────────────────────────────────────
+  // A combo is just a stored list of model ids ("alias/modelId"). It has no
+  // connection of its own, so switching a provider off used to leave the combo
+  // advertising that provider's models anyway — they kept showing up in
+  // /v1/models, the Combo tab, and every model picker, then failed at request
+  // time. Build the set of aliases/providers that currently have a live
+  // connection, and drop any combo whose members are all unreachable.
+  //
+  // Nested combos (a combo referencing another combo) resolve recursively with
+  // cycle protection, since combos can reference each other in a loop.
+  // Providers removed from the public registry (hidden entries like devin-cli)
+  // can still have live connections; their UI aliases must stay combo-routable.
+  const UNLISTED_PROVIDER_ALIASES = { "devin-cli": ["dv", "devin"] };
+
+  const liveAliases = new Set();
+  for (const [providerId, conn] of activeConnectionByProvider.entries()) {
+    const outputAlias = (
+      conn?.providerSpecificData?.prefix ||
+      getProviderAlias(providerId) ||
+      PROVIDER_ID_TO_ALIAS[providerId] ||
+      providerId
+    ).trim();
+    liveAliases.add(outputAlias);
+    liveAliases.add(PROVIDER_ID_TO_ALIAS[providerId] || providerId);
+    liveAliases.add(providerId);
+    for (const extra of UNLISTED_PROVIDER_ALIASES[providerId] || []) liveAliases.add(extra);
+  }
+
+  // A model id is "routable" when its alias/provider prefix is live. Web
+  // search/fetch pseudo-models ("alias/search", "alias/fetch") inherit the
+  // same liveness as their alias.
+  function modelAliasIsLive(modelId) {
+    const raw = String(modelId || "").trim();
+    if (!raw) return false;
+    const slash = raw.indexOf("/");
+    if (slash === -1) return false;
+    return liveAliases.has(raw.slice(0, slash));
+  }
+
+  // DB unavailable → we have no connection rows to judge liveness by, so fall
+  // back to the static catalog and expose everything rather than hiding models
+  // the operator may well be able to use.
+  const canJudgeComboHealth = connections.length > 0;
+
+  const comboByName = Object.fromEntries(combos.map((c) => [c.name, c.models]));
+  const comboAliveCache = new Map();
+
+  function comboIsAlive(name, visiting = new Set()) {
+    if (!canJudgeComboHealth) return true;
+    if (comboAliveCache.has(name)) return comboAliveCache.get(name);
+    if (!name || visiting.has(name)) return false;
+    visiting.add(name);
+    const members = comboByName[name];
+    let alive = false;
+    if (Array.isArray(members) && members.length) {
+      for (const member of members) {
+        const raw = typeof member === "string" ? member.trim() : "";
+        if (!raw) continue;
+        if (comboByName[raw]) {
+          if (comboIsAlive(raw, visiting)) { alive = true; break; }
+          continue;
+        }
+        if (modelAliasIsLive(raw)) { alive = true; break; }
+      }
+    }
+    visiting.delete(name);
+    comboAliveCache.set(name, alive);
+    return alive;
+  }
+
+  // Include no-auth free providers (e.g. opencode) so their models are exposed in /v1/models
+  for (const [id, provider] of Object.entries(FREE_PROVIDERS || {})) {
+    if (provider?.noAuth && !activeConnectionByProvider.has(id)) {
+      activeConnectionByProvider.set(id, {
+        id: "noauth",
+        provider: id,
+        isActive: true,
+      });
+    }
+  }
+
+  const models = [];
+  const combosByName = new Map(
+    combos.filter((c) => typeof c?.name === "string").map((c) => [c.name, c]),
+  );
+
+  // Lookup map so aggregateComboCapabilities can recursively resolve nested combos
+  const comboByNameForCaps = comboByName;
+
+  // Combos first (filtered by kind, then by provider liveness). Web combos expose
+  // `kind` so AI knows search vs fetch.
+  for (const combo of combos) {
+    if (!comboMatchesKinds(combo, kindFilter)) continue;
+    // Skip a combo whose providers are all switched off — it can never route.
+    if (!comboIsAlive(combo.name)) continue;
+    const entry = {
+      id: combo.name,
+      object: "model",
+      owned_by: "combo",
+    };
+    if (combo.kind === "webSearch" || combo.kind === "webFetch") {
+      entry.kind = combo.kind;
+    } else {
+      const comboCaps = aggregateComboCapabilities(combo.models, comboByName, comboSeatCapabilities);
+      if (comboCaps) entry.capabilities = comboCaps;
+      // Any seat can serve the request, so the only window a combo can promise is
+      // its smallest. Combo entries were the only models on this endpoint that
+      // published no limits at all, which leaves a client to guess from the name —
+      // and it guesses high (see the snake_case note on the per-provider path).
+      const { contextWindow, maxOutput } = comboSeatLimits(combo, combosByName);
+      if (Number.isFinite(contextWindow)) entry.context_length = contextWindow;
+      if (Number.isFinite(maxOutput)) entry.max_completion_tokens = maxOutput;
+    }
+    models.push(entry);
+  }
+
+  if (connections.length === 0) {
+    // DB unavailable -> return static models, filtered by per-model kind
+    for (const [alias, providerModels] of Object.entries(PROVIDER_MODELS)) {
+      const providerId = ALIAS_TO_PROVIDER_ID[alias] || alias;
+      if (!providerMatchesKinds(providerId, kindFilter, customNodeKinds)) continue;
+      for (const model of providerModels) {
+        if (!kindFilter.includes(modelKind(model))) continue;
+        if (isDisabled(alias, model.id) || isDisabled(providerId, model.id)) continue;
+        models.push({
+          id: `${alias}/${model.id}`,
+          object: "model",
+          owned_by: alias,
+          capabilities: getCapabilitiesForModel(alias, model.id),
+        });
+      }
+    }
+
+    for (const customModel of customModels) {
+      if (!customModel?.id || (customModel.type && customModel.type !== "llm")) continue;
+      // Custom models without active connection are LLM-only by current schema
+      if (!kindFilter.includes(LLM_KIND)) continue;
+      const providerAlias = customModel.providerAlias;
+      if (!providerAlias) continue;
+
+      const modelId = String(customModel.id).trim();
+      if (!modelId) continue;
+
+      models.push({
+        id: `${providerAlias}/${modelId}`,
+        object: "model",
+        owned_by: providerAlias,
+      });
+    }
+  } else {
+    for (const [providerId, conn] of activeConnectionByProvider.entries()) {
+      if (!providerMatchesKinds(providerId, kindFilter, customNodeKinds)) continue;
+
+      const staticAlias = PROVIDER_ID_TO_ALIAS[providerId] || providerId;
+      const outputAlias = (
+        conn?.providerSpecificData?.prefix
+        || getProviderAlias(providerId)
+        || staticAlias
+      ).trim();
+      const providerModels = PROVIDER_MODELS[staticAlias] || [];
+      const enabledModels = conn?.providerSpecificData?.enabledModels;
+      const hasExplicitEnabledModels =
+        Array.isArray(enabledModels) && enabledModels.length > 0;
+      const isCompatibleProvider =
+        isOpenAICompatibleProvider(providerId) || isAnthropicCompatibleProvider(providerId);
+
+      // Build kind lookup for static models so we can filter even when only IDs are exposed
+      const staticModelKindById = new Map(
+        providerModels.map((m) => [m.id, modelKind(m)])
+      );
+      let liveModelKindById = new Map();
+      let liveCapabilitiesById = new Map();
+
+      let rawModelIds = hasExplicitEnabledModels
+        ? Array.from(
+            new Set(
+              enabledModels.filter(
+                (modelId) => typeof modelId === "string" && modelId.trim() !== "",
+              ),
+            ),
+          )
+        : providerModels.map((model) => model.id);
+
+      if (isCompatibleProvider && rawModelIds.length === 0 && !skipDynamicFetch) {
+        rawModelIds = await fetchCompatibleModelIds(conn);
+      }
+
+      // Config-driven live catalog override (e.g. Kiro returns dynamic
+      // -thinking/-agentic variants per account). On failure, fall back to
+      // whatever rawModelIds already holds.
+      //
+      // Providers that accept an explicit enabledModels list (Cline) also run
+      // the resolver when that list is set — it narrows the live catalog to
+      // exactly those ids, so a Cline passthrough with a curated subset stops
+      // dumping its full catalog into /v1/models. Other resolvers ignore the
+      // arg and keep the old "skip when explicit list present" behaviour.
+      const liveResolver = LIVE_MODEL_RESOLVERS[providerId];
+      const narrowable = LIVE_MODEL_RESOLVERS[providerId] === LIVE_MODEL_RESOLVERS.cline
+        || LIVE_MODEL_RESOLVERS[providerId] === LIVE_MODEL_RESOLVERS.clinepass;
+      if (liveResolver && (narrowable ? true : !hasExplicitEnabledModels)) {
+        try {
+          const live = await liveResolver(
+            conn,
+            narrowable ? { enabledModels } : undefined,
+          );
+          if (live?.models?.length) {
+            rawModelIds = live.models.map((m) => m.id);
+            liveModelKindById = new Map(
+              live.models
+                .filter((m) => m?.id)
+                .map((m) => [m.id, modelKind(m)])
+            );
+            liveCapabilitiesById = new Map(
+              live.models
+                .filter((m) => m?.id && m.capabilities)
+                .map((m) => [m.id, m.capabilities])
+            );
+          }
+        } catch (err) {
+          console.log(`Live model fetch failed for ${providerId}: ${err?.message || err}`);
+        }
+      }
+
+      const modelIds = rawModelIds
+        .map((modelId) => {
+          if (modelId.startsWith(`${outputAlias}/`)) {
+            return modelId.slice(outputAlias.length + 1);
+          }
+          if (modelId.startsWith(`${staticAlias}/`)) {
+            return modelId.slice(staticAlias.length + 1);
+          }
+          if (modelId.startsWith(`${providerId}/`)) {
+            return modelId.slice(providerId.length + 1);
+          }
+          return modelId;
+        })
+        .filter((modelId) => typeof modelId === "string" && modelId.trim() !== "");
+
+      const customModelKindById = new Map();
+      const customModelIds = customModels
+        .filter((m) => {
+          if (!m?.id) return false;
+          // Auto-detect kind from model name when the stored type is still the
+          // default "llm" but the id clearly names a media model. This is what
+          // makes models from openai-compatible nodes show up in their media tab
+          // without the operator having to re-type every model by hand.
+          let kind = getModelKind(m) || LLM_KIND;
+          if (kind === LLM_KIND && !m?.type) kind = inferKindFromUnknownModelId(m.id);
+          if (!kindFilter.includes(kind) && !(kind === "imageToText" && kindFilter.includes(LLM_KIND))) return false;
+          const alias = m.providerAlias;
+          return alias === staticAlias || alias === outputAlias || alias === providerId;
+        })
+        .map((m) => {
+          const modelId = String(m.id).trim();
+          if (modelId) {
+            let kind = getModelKind(m) || LLM_KIND;
+            if (kind === LLM_KIND && !m?.type) kind = inferKindFromUnknownModelId(modelId);
+            customModelKindById.set(modelId, kind);
+          }
+          return modelId;
+        })
+        .filter((modelId) => modelId !== "");
+
+      const aliasModelIds = Object.values(modelAliases || {})
+        .filter((fullModel) => {
+          if (typeof fullModel !== "string" || !fullModel.includes("/")) return false;
+          return (
+            fullModel.startsWith(`${outputAlias}/`) ||
+            fullModel.startsWith(`${staticAlias}/`) ||
+            fullModel.startsWith(`${providerId}/`)
+          );
+        })
+        .map((fullModel) => {
+          if (fullModel.startsWith(`${outputAlias}/`)) {
+            return fullModel.slice(outputAlias.length + 1);
+          }
+          if (fullModel.startsWith(`${staticAlias}/`)) {
+            return fullModel.slice(staticAlias.length + 1);
+          }
+          if (fullModel.startsWith(`${providerId}/`)) {
+            return fullModel.slice(providerId.length + 1);
+          }
+          return fullModel;
+        })
+        .filter((modelId) => typeof modelId === "string" && modelId.trim() !== "");
+
+      const mergedModelIds = Array.from(new Set([...modelIds, ...customModelIds, ...aliasModelIds]));
+
+      for (const modelId of mergedModelIds) {
+        // Resolve kind: prefer custom/live metadata, then static, then ID heuristics.
+        const customKind = customModelKindById.get(modelId);
+        const liveKind = liveModelKindById.get(modelId);
+        const kind = customKind || liveKind || staticModelKindById.get(modelId) || inferKindFromUnknownModelId(modelId);
+        // imageToText custom models stay in the LLM list (vision-capable chat models)
+        const allowAsLlm = kind === "imageToText" && kindFilter.includes(LLM_KIND);
+        if (!kindFilter.includes(kind) && !allowAsLlm) continue;
+        if (isDisabled(outputAlias, modelId) || isDisabled(staticAlias, modelId) || isDisabled(providerId, modelId)) continue;
+
+        const model = {
+          id: `${outputAlias}/${modelId}`,
+          object: "model",
+          owned_by: outputAlias,
+        };
+        // Live-catalog resolvers (kiro/qoder/github/clinepass) mostly only return
+        // { id, name } — no per-model capability data. Fall back to the same
+        // pattern-matched capabilities the dashboard uses (useModelCaps.js) so
+        // dynamically-discovered LLM models still surface vision/reasoning/search/tools.
+        const liveCaps = liveCapabilitiesById.get(modelId);
+        const serviceCaps = capabilitiesFromServiceKind(customKind || liveKind);
+        const caps = liveCaps || serviceCaps || (kind === LLM_KIND ? getCapabilitiesForModel(providerId, modelId) : null);
+        if (caps) model.capabilities = caps;
+        // Token limits under the snake_case names the OpenAI/OpenRouter
+        // convention uses. `capabilities.contextWindow` is camelCase and nested,
+        // so clients matching context_length find nothing, fall back to guessing
+        // the window from the model name, and guess high — a 372k model read as
+        // 1.05M never reaches its compaction threshold and hard-fails upstream.
+        // Emitted at top level because not every client recurses into nested
+        // objects; the camelCase `capabilities` block stays for compatibility.
+        if (kind === LLM_KIND || allowAsLlm) {
+          let contextWindow = caps?.contextWindow;
+          let maxOutput = caps?.maxOutput;
+          // Live-catalog and service-kind capabilities are usually partial
+          // (often just { tools: true }), so fill the gaps from the static
+          // table rather than emitting null and leaving clients to guess.
+          if (!Number.isFinite(contextWindow) || !Number.isFinite(maxOutput)) {
+            const fallback = getCapabilitiesForModel(providerId, modelId);
+            if (!Number.isFinite(contextWindow)) contextWindow = fallback.contextWindow;
+            if (!Number.isFinite(maxOutput)) maxOutput = fallback.maxOutput;
+          }
+          if (Number.isFinite(contextWindow)) model.context_length = contextWindow;
+          if (Number.isFinite(maxOutput)) model.max_completion_tokens = maxOutput;
+          // Selectable reasoning levels (the set the dashboard picker shows) so clients
+          // can build their effort selector from the gateway instead of keeping a
+          // per-model table. Omitted when the model has no reasoning.
+          const thinkingLevels = getThinkingLevels(providerId, modelId);
+          if (Array.isArray(thinkingLevels) && thinkingLevels.length > 0) model.thinking_levels = thinkingLevels;
+        }
+        models.push(model);
+      }
+
+      // Web search/fetch — provider IS the model, expose as {alias}/search and/or {alias}/fetch with explicit kind
+      const providerInfo = AI_PROVIDERS[providerId];
+      if (kindFilter.includes("webSearch") && providerInfo?.searchConfig) {
+        models.push({
+          id: `${outputAlias}/search`,
+          object: "model",
+          kind: "webSearch",
+          owned_by: outputAlias,
+        });
+      }
+      if (kindFilter.includes("webFetch") && providerInfo?.fetchConfig) {
+        models.push({
+          id: `${outputAlias}/fetch`,
+          object: "model",
+          kind: "webFetch",
+          owned_by: outputAlias,
+        });
+      }
+    }
+
+    // ── noAuth free providers ──────────────────────────────────────────────
+    // Providers with `noAuth: true` in the registry (opencode "oc", mimo-free,
+    // edge-tts, …) have no DB connection row, so the active-connections loop
+    // above never lists them. When the DB is available we would otherwise drop
+    // their entire catalog from /v1/models even though the chat routes accept
+    // them. List their static PROVIDER_MODELS entries (optionally overridden
+    // by a live catalog resolver) under the same kind filter as the rest.
+    const seenAliases = new Set(
+      [...activeConnectionByProvider.entries()].map(
+        ([providerId, conn]) => {
+          const staticAlias = PROVIDER_ID_TO_ALIAS[providerId] || providerId;
+          const outputAlias = (
+            conn?.providerSpecificData?.prefix
+            || getProviderAlias(providerId)
+            || staticAlias
+          ).trim();
+          return [providerId, staticAlias, outputAlias];
+        }
+      )
+    );
+
+    // Every live noAuth catalog fetch used to be awaited inside the loop below,
+    // so /v1/models cost the SUM of provider latencies — and up to 8s for each
+    // provider that hung. Kick them off together first (cost = slowest one) and
+    // memoize for NOAUTH_CACHE_TTL_MS, so tab-focus refetches don't re-hit the
+    // network. Target selection reads only state the loop never mutates, so the
+    // model list below is unchanged.
+    const liveByProvider = new Map();
+    if (!skipDynamicFetch) {
+      const targets = [];
+      for (const [providerId, info] of Object.entries(AI_PROVIDERS)) {
+        if (!info?.noAuth) continue;
+        if (!providerMatchesKinds(providerId, kindFilter, customNodeKinds)) continue;
+        if (seenAliases.has(providerId)) continue;
+        const cached = noAuthCatalogCache.get(providerId);
+        if (cached && Date.now() - cached.at < NOAUTH_CACHE_TTL_MS) {
+          liveByProvider.set(providerId, cached.models);
+          continue;
+        }
+        const resolver = NOAUTH_RESOLVERS[providerId];
+        if (resolver) targets.push([providerId, resolver]);
+      }
+      await Promise.all(
+        targets.map(async ([providerId, resolver]) => {
+          try {
+            const live = await resolver();
+            noAuthCatalogCache.set(providerId, { at: Date.now(), models: live?.models || null });
+            liveByProvider.set(providerId, live);
+          } catch (err) {
+            console.log(`noAuth live fetch failed for ${providerId}: ${err?.message || err}`);
+          }
+        })
+      );
+    }
+
+    for (const [providerId, info] of Object.entries(AI_PROVIDERS)) {
+      if (!info?.noAuth) continue;
+      if (!providerMatchesKinds(providerId, kindFilter, customNodeKinds)) continue;
+      if (seenAliases.has(providerId)) continue; // a real connection already covers it
+      const staticAlias = PROVIDER_ID_TO_ALIAS[providerId] || providerId;
+      const outputAlias = getProviderAlias(providerId) || staticAlias;
+      const providerModels = PROVIDER_MODELS[staticAlias] || [];
+      const staticModelKindById = new Map(providerModels.map((m) => [m.id, modelKind(m)]));
+      let rawModelIds = providerModels.map((m) => m.id);
+      let liveModelKindById = new Map();
+      let liveCapabilitiesById = new Map();
+      if (!skipDynamicFetch) {
+        const live = liveByProvider.get(providerId);
+        if (live?.models?.length) {
+          rawModelIds = live.models.map((m) => m.id);
+          liveModelKindById = new Map(
+            live.models.filter((m) => m?.id).map((m) => [m.id, modelKind(m)])
+          );
+        }
+      }
+      for (const modelId of new Set(rawModelIds)) {
+        const kind =
+          liveModelKindById.get(modelId)
+          || staticModelKindById.get(modelId)
+          || inferKindFromUnknownModelId(modelId);
+        if (!kindFilter.includes(kind)) continue;
+        if (isDisabled(outputAlias, modelId) || isDisabled(staticAlias, modelId)) continue;
+        const model = {
+          id: `${outputAlias}/${modelId}`,
+          object: "model",
+          owned_by: outputAlias,
+        };
+        const caps =
+          liveCapabilitiesById.get(modelId)
+          || (kind === LLM_KIND ? getCapabilitiesForModel(providerId, modelId) : null);
+        if (caps) model.capabilities = caps;
+        if (kind === LLM_KIND) {
+          let contextWindow = caps?.contextWindow;
+          let maxOutput = caps?.maxOutput;
+          if (!Number.isFinite(contextWindow) || !Number.isFinite(maxOutput)) {
+            const fallback = getCapabilitiesForModel(providerId, modelId);
+            if (!Number.isFinite(contextWindow)) contextWindow = fallback.contextWindow;
+            if (!Number.isFinite(maxOutput)) maxOutput = fallback.maxOutput;
+          }
+          if (Number.isFinite(contextWindow)) model.context_length = contextWindow;
+          if (Number.isFinite(maxOutput)) model.max_completion_tokens = maxOutput;
+        }
+        models.push(model);
+      }
+    }
+  }
+
+  const dedupedModels = [];
+  const seenModelIds = new Set();
+  for (const model of models) {
+    if (!model?.id || seenModelIds.has(model.id)) continue;
+    seenModelIds.add(model.id);
+    dedupedModels.push(model);
+  }
+
+  // How many active connections (API keys / OAuth grants) back each provider.
+  // Clients that fan out several requests at one provider need this to size
+  // their own concurrency — see shared/lib/concurrency.js. Additive field on an
+  // OpenAI-compatible list; omitted when the alias can't be resolved or the
+  // provider has no active connection, so consumers can fall back safely.
+  const aliasToProviderIdForCount = Object.fromEntries(
+    Object.entries(PROVIDER_ID_TO_ALIAS).map(([id, alias]) => [alias, id])
+  );
+  const connectionCountByProvider = new Map();
+  for (const conn of connections) {
+    if (!conn?.provider) continue;
+    connectionCountByProvider.set(conn.provider, (connectionCountByProvider.get(conn.provider) || 0) + 1);
+  }
+  for (const model of dedupedModels) {
+    const providerId = aliasToProviderIdForCount[String(model?.owned_by || "").trim()];
+    const count = providerId ? connectionCountByProvider.get(providerId) : 0;
+    if (count > 0) model.connections = count;
+  }
+
+  // Bound the memo: kindFilter varies per route, and a long-lived process would
+  // otherwise retain one entry per distinct configuration seen.
+  if (modelsListCache.size >= MODELS_LIST_CACHE_MAX) {
+    modelsListCache.delete(modelsListCache.keys().next().value);
+  }
+  modelsListCache.set(listCacheKey, { at: Date.now(), value: dedupedModels });
+
+  return dedupedModels;
+}
+
+/**
+ * Handle CORS preflight
+ */
+export async function OPTIONS() {
+  return new Response(null, {
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, OPTIONS",
+      "Access-Control-Allow-Headers": "*",
+    },
+  });
+}
+
+/**
+ * GET /v1/models - OpenAI compatible models list (LLM/chat models only by default).
+ * For other capabilities use /v1/models/{kind} (image, tts, stt, embedding, image-to-text, web).
+ */
+export async function GET(request) {
+  try {
+    // Detect cross-instance recursive /models fetch (another 9router fetching our /models)
+    const skipDynamicFetch = request?.headers?.get(INTERNAL_MODELS_FETCH_HEADER) === "1";
+    const data = await filterModelsListForKey(
+      await getKeyAccessContext(request),
+      await buildModelsList([LLM_KIND], { skipDynamicFetch })
+    );
+    return Response.json({ object: "list", data }, {
+      headers: { "Access-Control-Allow-Origin": "*" },
+    });
+  } catch (error) {
+    console.log("Error fetching models:", error);
+    return Response.json(
+      { error: { message: error.message, type: "server_error" } },
+      { status: 500 }
+    );
+  }
+}
