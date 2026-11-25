@@ -34,7 +34,7 @@ export default function PurchasingErrorPage({
       // Abaikan jika localStorage kosong
     } finally {
       setIsRecovering(false);
-      window.location.href = "/";
+      reset();
     }
   };
 
