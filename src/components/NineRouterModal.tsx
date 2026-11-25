@@ -80,6 +80,20 @@ function getBrowserHostname() {
   return typeof window !== "undefined" ? window.location.hostname || "localhost" : "localhost";
 }
 
+function resolveBrowserReachableUrl(rawUrl: string | undefined, browserHost: string, fallbackPort: number) {
+  const candidate = rawUrl?.trim() || `http://${browserHost}:${fallbackPort}`;
+  try {
+    const parsed = new URL(candidate);
+    const loopbacks = new Set(["localhost", "127.0.0.1", "0.0.0.0", "[::1]"]);
+    if (loopbacks.has(parsed.hostname.toLowerCase()) && browserHost && !loopbacks.has(browserHost.toLowerCase())) {
+      parsed.hostname = browserHost;
+    }
+    return parsed.toString().replace(/\/+$/, "");
+  } catch {
+    return `http://${browserHost}:${fallbackPort}`;
+  }
+}
+
 function getErrorMsg(err: unknown, fallback: string) {
   return err instanceof Error && err.message ? err.message : fallback;
 }
@@ -429,7 +443,7 @@ export default function NineRouterModal({
 
   if (!isOpen) return null;
 
-  const routerDashboardLink = healthInfo?.rootUrl || `http://${browserHost}:20128`;
+  const routerDashboardLink = resolveBrowserReachableUrl(healthInfo?.rootUrl, browserHost, 20128);
   const bridgeBaseUrl = `http://${browserHost}:${localPort}`;
   const sampleCurlSnippet = `curl -X POST ${bridgeBaseUrl}/api/ai/chat \\
   -H "Content-Type: application/json" \\

@@ -11,6 +11,15 @@ const proxyClientMaxBodySize = process.env.NINEROUTER_PROXY_CLIENT_MAX_BODY_SIZE
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  allowedDevOrigins: [
+    "192.168.1.47",
+    "192.168.1.*",
+    "192.168.*.*",
+    "10.*.*.*",
+    "localhost",
+    "127.0.0.1",
+    "0.0.0.0",
+  ],
   distDir: process.env.NEXT_DIST_DIR || ".next",
   output: "standalone",
   // `open` must stay external. It derives its own directory from `import.meta.url`, and
