@@ -3,14 +3,31 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   Bot,
+  CheckCircle2,
   Cpu,
   MessageSquare,
+  Palette,
   RotateCcw,
   Send,
   Settings,
   Sparkles,
   X,
 } from "lucide-react";
+import type { DashboardBgPreset } from "@/lib/dashboardPrefs";
+
+export interface ChatbotDashboardAction {
+  type: "UPDATE_PREFS" | "RESET_DEFAULT" | "OPEN_CUSTOMIZER";
+  patch?: {
+    bgPreset?: DashboardBgPreset;
+    bgCustomColor?: string;
+    bgOverlayOpacity?: number;
+    themeColor?: string;
+    compactTable?: boolean;
+    showBanner?: boolean;
+    showStats?: boolean;
+    showFilterPanel?: boolean;
+  };
+}
 
 interface ChatMessage {
   id: string;
@@ -19,6 +36,8 @@ interface ChatMessage {
   model?: string;
   isError?: boolean;
   hint?: string;
+  appliedActionLabel?: string;
+  suggestBackgroundActions?: boolean;
 }
 
 interface NineRouterChatbotProps {
@@ -27,7 +46,180 @@ interface NineRouterChatbotProps {
   defaultModel?: string;
   contextSummary: string;
   quickPrompts: string[];
+  currentPrefs?: {
+    bgPreset?: DashboardBgPreset;
+    themeColor?: string;
+  };
   onOpenSettings: () => void;
+  onApplyDashboardAction?: (
+    action: ChatbotDashboardAction
+  ) => Promise<{ success: boolean; message?: string }>;
+}
+
+const VALID_BG_PRESETS = new Set<DashboardBgPreset>([
+  "default",
+  "dark",
+  "ocean",
+  "emerald",
+  "violet",
+  "sunset",
+  "custom",
+]);
+const VALID_THEME_COLORS = new Set(["indigo", "emerald", "slate", "violet"]);
+
+const QUICK_BG_CHIPS: Array<{ label: string; action: ChatbotDashboardAction }> = [
+  { label: "Gelap", action: { type: "UPDATE_PREFS", patch: { bgPreset: "dark" } } },
+  { label: "Biru", action: { type: "UPDATE_PREFS", patch: { bgPreset: "ocean" } } },
+  { label: "Hijau", action: { type: "UPDATE_PREFS", patch: { bgPreset: "emerald" } } },
+  { label: "Ungu", action: { type: "UPDATE_PREFS", patch: { bgPreset: "violet" } } },
+  { label: "Upload Gambar...", action: { type: "OPEN_CUSTOMIZER" } },
+  { label: "Reset Default", action: { type: "RESET_DEFAULT" } },
+];
+
+function sanitizeParsedAction(raw: unknown): ChatbotDashboardAction | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as { type?: unknown; patch?: unknown };
+  const rawType = typeof obj.type === "string" ? obj.type.toUpperCase() : "";
+
+  if (rawType === "RESET_DEFAULT" || rawType === "RESTORE_DEFAULT") {
+    return { type: "RESET_DEFAULT" };
+  }
+  if (rawType === "OPEN_CUSTOMIZER" || rawType === "OPEN_BACKGROUND_MODAL") {
+    return { type: "OPEN_CUSTOMIZER" };
+  }
+  if (rawType === "UPDATE_PREFS" || rawType === "UPDATE_DASHBOARD") {
+    const p =
+      obj.patch && typeof obj.patch === "object"
+        ? (obj.patch as Record<string, unknown>)
+        : {};
+    const patch: NonNullable<ChatbotDashboardAction["patch"]> = {};
+    if (
+      typeof p.bgPreset === "string" &&
+      VALID_BG_PRESETS.has(p.bgPreset as DashboardBgPreset)
+    ) {
+      patch.bgPreset = p.bgPreset as DashboardBgPreset;
+    }
+    if (
+      typeof p.bgCustomColor === "string" &&
+      /^#[0-9a-fA-F]{6}$/.test(p.bgCustomColor.trim())
+    ) {
+      patch.bgCustomColor = p.bgCustomColor.trim().toLowerCase();
+      if (!patch.bgPreset) patch.bgPreset = "custom";
+    }
+    if (
+      typeof p.bgOverlayOpacity === "number" &&
+      Number.isFinite(p.bgOverlayOpacity)
+    ) {
+      patch.bgOverlayOpacity = Math.min(
+        85,
+        Math.max(0, Math.round(p.bgOverlayOpacity))
+      );
+    }
+    if (typeof p.themeColor === "string" && VALID_THEME_COLORS.has(p.themeColor)) {
+      patch.themeColor = p.themeColor;
+    }
+    if (typeof p.compactTable === "boolean") patch.compactTable = p.compactTable;
+    if (typeof p.showBanner === "boolean") patch.showBanner = p.showBanner;
+    if (typeof p.showStats === "boolean") patch.showStats = p.showStats;
+    if (typeof p.showFilterPanel === "boolean") patch.showFilterPanel = p.showFilterPanel;
+
+    if (Object.keys(patch).length > 0) {
+      return { type: "UPDATE_PREFS", patch };
+    }
+  }
+  return null;
+}
+
+function extractAppActionFromReply(replyText: string): {
+  cleanedReply: string;
+  action: ChatbotDashboardAction | null;
+} {
+  let action: ChatbotDashboardAction | null = null;
+  const cleanedReply = replyText
+    .replace(/\[APP_ACTION\]([\s\S]*?)\[\/APP_ACTION\]/gi, (_, jsonBody: string) => {
+      try {
+        const candidate = sanitizeParsedAction(JSON.parse(jsonBody.trim()));
+        if (candidate) action = candidate;
+      } catch {
+        // ignore malformed JSON tag
+      }
+      return "";
+    })
+    .trim();
+
+  return { cleanedReply, action };
+}
+
+function inferDashboardActionFromConversation(
+  userText: string,
+  history: ChatMessage[]
+): { action: ChatbotDashboardAction | null; isBgTopic: boolean } {
+  const lower = userText.toLowerCase();
+  const isBgMentioned =
+    /\b(background|backgroud|latar|wallpaper|tema|dark mode|mode gelap|tampilan)\b/i.test(
+      lower
+    );
+  const recentContextText = history
+    .slice(-4)
+    .map((m) => m.content.toLowerCase())
+    .join(" ");
+  const prevWasBgTopic =
+    /\b(background|backgroud|latar|wallpaper|tema|kustom|bg-panel)\b/i.test(
+      recentContextText
+    );
+  const isApplyCommand =
+    /\b(terapkan|apply|aktifkan|pasang|jalankan|gunakan|pakai|ganti|ubah|reset|restore|default)\b/i.test(
+      lower
+    );
+
+  const isBgTopic = isBgMentioned || (prevWasBgTopic && isApplyCommand);
+  if (!isBgTopic) return { action: null, isBgTopic: false };
+
+  if (/\b(reset|restore|default|semula|kembali)\b/i.test(lower)) {
+    return { action: { type: "RESET_DEFAULT" }, isBgTopic: true };
+  }
+
+  const hexMatch = userText.match(/#[0-9a-fA-F]{6}\b/);
+  if (hexMatch) {
+    return {
+      action: {
+        type: "UPDATE_PREFS",
+        patch: { bgPreset: "custom", bgCustomColor: hexMatch[0].toLowerCase() },
+      },
+      isBgTopic: true,
+    };
+  }
+
+  if (/\b(gelap|dark|night|hitam)\b/i.test(lower)) {
+    return { action: { type: "UPDATE_PREFS", patch: { bgPreset: "dark" } }, isBgTopic: true };
+  }
+  if (/\b(biru|blue|ocean|samudra|laut)\b/i.test(lower)) {
+    return { action: { type: "UPDATE_PREFS", patch: { bgPreset: "ocean" } }, isBgTopic: true };
+  }
+  if (/\b(hijau|green|emerald|zamrud)\b/i.test(lower)) {
+    return {
+      action: { type: "UPDATE_PREFS", patch: { bgPreset: "emerald" } },
+      isBgTopic: true,
+    };
+  }
+  if (/\b(ungu|violet|purple)\b/i.test(lower)) {
+    return { action: { type: "UPDATE_PREFS", patch: { bgPreset: "violet" } }, isBgTopic: true };
+  }
+  if (/\b(senja|sunset|oranye|orange|hangat|hanget)\b/i.test(lower)) {
+    return { action: { type: "UPDATE_PREFS", patch: { bgPreset: "sunset" } }, isBgTopic: true };
+  }
+  if (/\b(terang|light|putih|cerah)\b/i.test(lower)) {
+    return {
+      action: { type: "UPDATE_PREFS", patch: { bgPreset: "default" } },
+      isBgTopic: true,
+    };
+  }
+
+  if (isApplyCommand || /\b(upload|gambar|foto|custom)\b/i.test(lower)) {
+    return { action: { type: "OPEN_CUSTOMIZER" }, isBgTopic: true };
+  }
+
+  return { action: null, isBgTopic: true };
 }
 
 export default function NineRouterChatbot({
@@ -36,7 +228,9 @@ export default function NineRouterChatbot({
   defaultModel,
   contextSummary,
   quickPrompts,
+  currentPrefs,
   onOpenSettings,
+  onApplyDashboardAction,
 }: NineRouterChatbotProps) {
   const [isOpen, setIsOpen] = useState<boolean>(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -95,6 +289,30 @@ export default function NineRouterChatbot({
     }
   }, [messages, isOpen, isSending]);
 
+  const executeDashboardAction = async (
+    action: ChatbotDashboardAction
+  ): Promise<{ success: boolean; message?: string }> => {
+    if (!onApplyDashboardAction) {
+      return { success: false, message: "Aksi dashboard belum tersedia." };
+    }
+    return await onApplyDashboardAction(action);
+  };
+
+  const handleChipAction = async (label: string, action: ChatbotDashboardAction) => {
+    const res = await executeDashboardAction(action);
+    if (res.success) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: nextMsgId("sys"),
+          role: "assistant",
+          content: res.message || `Pengaturan "${label}" berhasil diterapkan ke dashboard Anda.`,
+          appliedActionLabel: res.message || `Diterapkan: ${label}`,
+        },
+      ]);
+    }
+  };
+
   const sendMessage = async (textOverride?: string) => {
     const text = (textOverride ?? inputValue).trim();
     if (!text || isSending) return;
@@ -113,7 +331,24 @@ export default function NineRouterChatbot({
     try {
       const systemPrompt = [
         `Anda adalah Asisten AI resmi untuk sistem ${projectLabel}.`,
-        "Jawablah dalam bahasa Indonesia yang ringkas, jelas, dan membantu berdasarkan data project berikut.",
+        "INFORMASI ARSITEKTUR NYATA (WAJIB DIPATUHI):",
+        `- Aplikasi ini SUDAH dibangun menggunakan Next.js 16 + React 19 + Tailwind CSS + Prisma/SQLite (BUKAN HTML statis, Vue, atau Laravel).`,
+        "- DILARANG menanyakan framework atau stack aplikasi, dan DILARANG menulis tutorial HTML/CSS/JS mentah.",
+        "- Fitur ganti background & personalisasi dashboard per akun ID Card SUDAH TERSEDIA di aplikasi ini (termasuk preset terang/gelap/samudra biru/hijau zamrud/ungu/senja, warna hex kustom, upload gambar JPG/PNG/WebP + slider overlay, dan Restore Default).",
+        `Preferensi user saat ini: bgPreset=${currentPrefs?.bgPreset || "default"}, themeColor=${currentPrefs?.themeColor || "default"}.`,
+        "",
+        "KEMAMPUAN EKSEKUSI LANGSUNG KE DASHBOARD:",
+        "Anda dapat LANGSUNG mengubah tampilan/background dashboard user dengan menyertakan TEPAT 1 blok tag berikut di akhir balasan Anda:",
+        '1. Ubah background preset: [APP_ACTION]{"type":"UPDATE_PREFS","patch":{"bgPreset":"dark"}}[/APP_ACTION] (nilai valid bgPreset: "default", "dark", "ocean", "emerald", "violet", "sunset")',
+        '2. Ubah background warna hex: [APP_ACTION]{"type":"UPDATE_PREFS","patch":{"bgPreset":"custom","bgCustomColor":"#1e293b"}}[/APP_ACTION]',
+        '3. Ubah tema banner: [APP_ACTION]{"type":"UPDATE_PREFS","patch":{"themeColor":"emerald"}}[/APP_ACTION]',
+        '4. Buka panel Upload Gambar & Pengaturan Background lengkap: [APP_ACTION]{"type":"OPEN_CUSTOMIZER"}[/APP_ACTION]',
+        '5. Restore/Reset tampilan ke default: [APP_ACTION]{"type":"RESET_DEFAULT"}[/APP_ACTION]',
+        "",
+        "ATURAN BALASAN:",
+        "- Jawab dalam Bahasa Indonesia yang ringkas dan jelas.",
+        '- Jika user ingin mengganti background/tema/tampilan atau mengetik "terapkan"/"pakai"/"pasang" terkait background/tampilan, SERTAKAN tag [APP_ACTION]...[/APP_ACTION] agar langsung diterapkan ke layar user.',
+        "- Jika user meminta penambahan modul/fitur coding baru di luar stok/PO/personalisasi tampilan (yang butuh edit kode server & skema Prisma), sampaikan dengan jujur batasannya dan jangan mengarang kode HTML tempelan.",
         "",
         "DATA REALTIME PROJECT SAAT INI:",
         contextSummary,
@@ -140,13 +375,45 @@ export default function NineRouterChatbot({
       };
 
       if (data.success) {
+        const rawReply = data.reply || "(Tidak ada balasan)";
+        const { cleanedReply, action: llmAction } = extractAppActionFromReply(rawReply);
+        const inferred = inferDashboardActionFromConversation(text, messages);
+        const effectiveAction = llmAction || inferred.action;
+
+        let appliedActionLabel: string | undefined;
+        if (effectiveAction && onApplyDashboardAction) {
+          const applied = await executeDashboardAction(effectiveAction);
+          if (applied.success) {
+            appliedActionLabel =
+              applied.message ||
+              (effectiveAction.type === "OPEN_CUSTOMIZER"
+                ? "Panel Pengaturan Background & Tampilan dibuka"
+                : effectiveAction.type === "RESET_DEFAULT"
+                  ? "Tampilan dikembalikan ke Default"
+                  : "Perubahan background/tampilan diterapkan");
+          }
+        }
+
+        // Prevent confusing raw HTML/tutorial dumps if model still tried emitting HTML despite background action
+        const containsRawHtmlSnippet = /```html|<div\s+id=["']bg-panel|document\.documentElement/i.test(
+          cleanedReply
+        );
+        const finalContent =
+          containsRawHtmlSnippet && appliedActionLabel
+            ? `${appliedActionLabel}. Anda juga dapat memilih warna atau mengunggah gambar background langsung melalui tombol cepat di bawah ini atau menu "Atur Tampilan".`
+            : cleanedReply || appliedActionLabel || rawReply;
+
         setMessages((prev) => [
           ...prev,
           {
             id: nextMsgId("a"),
             role: "assistant",
-            content: data.reply || "(Tidak ada balasan)",
+            content: finalContent,
             model: data.model,
+            appliedActionLabel,
+            suggestBackgroundActions: Boolean(
+              inferred.isBgTopic || effectiveAction
+            ),
           },
         ]);
       } else {
@@ -202,7 +469,7 @@ export default function NineRouterChatbot({
   }
 
   return (
-    <div className="fixed bottom-5 right-5 z-40 w-[calc(100vw-2rem)] sm:w-[390px] bg-white rounded-2xl border border-slate-200 shadow-2xl flex flex-col overflow-hidden max-h-[540px]">
+    <div className="fixed bottom-5 right-5 z-40 w-[calc(100vw-2rem)] sm:w-[400px] bg-white rounded-2xl border border-slate-200 shadow-2xl flex flex-col overflow-hidden max-h-[560px]">
       {/* Header Chatbot */}
       <div className="bg-gradient-to-r from-violet-700 to-indigo-700 text-white px-4 py-3 flex items-center justify-between gap-2 shrink-0">
         <div className="flex items-center gap-2.5 min-w-0">
@@ -282,9 +549,9 @@ export default function NineRouterChatbot({
             <div className="bg-white border border-slate-200 rounded-xl p-3 text-xs text-slate-600 leading-relaxed shadow-2xs">
               <div className="font-bold text-slate-800 flex items-center gap-1.5 mb-1">
                 <Sparkles className="w-3.5 h-3.5 text-violet-600" />
-                <span>Terhubung ke AI Gateway</span>
+                <span>Terhubung ke AI Gateway &amp; Kontrol Dashboard</span>
               </div>
-              Tanyakan apa saja mengenai data <b>{projectLabel}</b> secara langsung atau pilih pertanyaan cepat di bawah:
+              Tanyakan data <b>{projectLabel}</b> atau minta langsung ganti background/tema dashboard Anda (misal: &ldquo;ganti background gelap&rdquo;).
             </div>
 
             <div className="space-y-1.5">
@@ -298,6 +565,18 @@ export default function NineRouterChatbot({
                   {q}
                 </button>
               ))}
+              {onApplyDashboardAction && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    void handleChipAction("Panel Background", { type: "OPEN_CUSTOMIZER" })
+                  }
+                  className="w-full text-left text-[11px] font-semibold bg-indigo-50/80 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 px-3 py-2 rounded-xl transition cursor-pointer flex items-center gap-1.5"
+                >
+                  <Palette className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>Ganti Background &amp; Tema Dashboard Pribadi</span>
+                </button>
+              )}
             </div>
           </div>
         ) : (
@@ -307,7 +586,7 @@ export default function NineRouterChatbot({
               className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
             >
               <div
-                className={`max-w-[85%] rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed shadow-2xs ${
+                className={`max-w-[88%] rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed shadow-2xs ${
                   m.role === "user"
                     ? "bg-indigo-600 text-white rounded-br-sm"
                     : m.isError
@@ -316,6 +595,29 @@ export default function NineRouterChatbot({
                 }`}
               >
                 <div className="whitespace-pre-wrap break-words">{m.content}</div>
+
+                {m.appliedActionLabel && (
+                  <div className="mt-2 px-2.5 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg text-[11px] font-semibold flex items-center gap-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    <span>{m.appliedActionLabel}</span>
+                  </div>
+                )}
+
+                {m.suggestBackgroundActions && onApplyDashboardAction && (
+                  <div className="mt-2 pt-2 border-t border-slate-100 flex flex-wrap gap-1">
+                    {QUICK_BG_CHIPS.map((chip) => (
+                      <button
+                        key={chip.label}
+                        type="button"
+                        onClick={() => void handleChipAction(chip.label, chip.action)}
+                        className="text-[10px] font-semibold bg-slate-100 hover:bg-violet-100 text-slate-700 hover:text-violet-800 border border-slate-200 px-2 py-1 rounded-md cursor-pointer transition"
+                      >
+                        {chip.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
                 {m.hint && (
                   <div className="mt-2 pt-2 border-t border-rose-200/70 text-[11px] text-rose-800 space-y-1.5">
                     <p>{m.hint}</p>
@@ -325,10 +627,11 @@ export default function NineRouterChatbot({
                       className="inline-flex items-center gap-1 bg-rose-600 hover:bg-rose-700 text-white font-bold px-2.5 py-1 rounded-lg text-[10px] cursor-pointer"
                     >
                       <Settings className="w-3 h-3" />
-                      <span>Buka Pengaturan & Detect Model</span>
+                      <span>Buka Pengaturan &amp; Detect Model</span>
                     </button>
                   </div>
                 )}
+
                 {m.model && !m.isError && (
                   <div className="mt-1.5 text-[9px] text-slate-400 font-mono">
                     via {m.model}
@@ -368,7 +671,7 @@ export default function NineRouterChatbot({
               void sendMessage();
             }
           }}
-          placeholder="Tanya AI..."
+          placeholder="Tanya AI atau ketik 'ganti background gelap'..."
           className="flex-1 resize-none bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs focus:bg-white focus:ring-2 focus:ring-violet-500 outline-none max-h-24"
         />
         <button

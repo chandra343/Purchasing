@@ -26,6 +26,8 @@ import {
   DEFAULT_PURCHASING_PREFS,
   PurchasingDashboardPrefs,
   PurchasingStatKey,
+  PurchasingThemeColor,
+  getDashboardBackgroundStyle,
   getPurchasingBannerClass,
   isPurchasingPrefsCustomized,
   parsePurchasingPrefs,
@@ -84,7 +86,7 @@ import {
 } from "lucide-react";
 import LocationMapEmbed from "./LocationMapEmbed";
 import NineRouterModal from "./NineRouterModal";
-import NineRouterChatbot from "./NineRouterChatbot";
+import NineRouterChatbot, { ChatbotDashboardAction } from "./NineRouterChatbot";
 import DashboardCustomizerModal from "./DashboardCustomizerModal";
 import DashboardErrorBoundary from "./DashboardErrorBoundary";
 
@@ -236,6 +238,10 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
   );
   const isDashboardCustomized = useMemo(
     () => isPurchasingPrefsCustomized(dashboardPrefs),
+    [dashboardPrefs]
+  );
+  const bgStyle = useMemo(
+    () => getDashboardBackgroundStyle(dashboardPrefs),
     [dashboardPrefs]
   );
 
@@ -1276,6 +1282,45 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
     return false;
   };
 
+  const handleChatbotDashboardAction = async (
+    action: ChatbotDashboardAction
+  ): Promise<{ success: boolean; message?: string }> => {
+    if (action.type === "OPEN_CUSTOMIZER") {
+      setShowCustomizerModal(true);
+      return { success: true, message: "Panel Pengaturan Background & Tampilan dibuka" };
+    }
+    if (action.type === "RESET_DEFAULT") {
+      const ok = await handleResetDashboardPrefs();
+      return {
+        success: ok,
+        message: ok
+          ? "Background & tampilan dikembalikan ke Default"
+          : "Gagal mengembalikan ke Default",
+      };
+    }
+    const patch = action.patch || {};
+    const validBannerThemes = new Set<PurchasingThemeColor>(["emerald", "indigo", "slate", "violet"]);
+    const nextPrefs: PurchasingDashboardPrefs = {
+      ...dashboardPrefs,
+      ...(patch.bgPreset !== undefined ? { bgPreset: patch.bgPreset, bgImageData: patch.bgPreset === "custom" ? dashboardPrefs.bgImageData : "" } : {}),
+      ...(patch.bgCustomColor !== undefined ? { bgCustomColor: patch.bgCustomColor, bgImageData: "" } : {}),
+      ...(patch.bgOverlayOpacity !== undefined ? { bgOverlayOpacity: patch.bgOverlayOpacity } : {}),
+      ...(patch.themeColor && validBannerThemes.has(patch.themeColor as PurchasingThemeColor)
+        ? { themeColor: patch.themeColor as PurchasingThemeColor }
+        : {}),
+      ...(patch.compactTable !== undefined ? { compactTable: patch.compactTable } : {}),
+      ...(patch.showBanner !== undefined ? { showBanner: patch.showBanner } : {}),
+      ...(patch.showStats !== undefined ? { showStats: patch.showStats } : {}),
+    };
+    const ok = await handleSaveDashboardPrefs(nextPrefs);
+    return {
+      success: ok,
+      message: ok
+        ? `Tampilan (${nextPrefs.bgPreset}) diterapkan untuk akun ${currentStaff?.name || "Anda"}`
+        : "Gagal menerapkan tampilan dashboard",
+    };
+  };
+
   // Quick Action: Buka Form PO dari Barang Menipis Gudang
   const handleOpenRestockPO = (item: any) => {
     setNewPoForm({
@@ -1626,7 +1671,24 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800">
+    <div
+      className={`min-h-screen relative transition-colors duration-300 ${bgStyle.containerClass}`}
+      style={bgStyle.containerStyle}
+    >
+      {bgStyle.safeImageUrl && (
+        <div
+          aria-hidden="true"
+          className="fixed inset-0 pointer-events-none z-0 bg-cover bg-center"
+          style={{ backgroundImage: `url("${bgStyle.safeImageUrl}")` }}
+        />
+      )}
+      {bgStyle.safeImageUrl && (
+        <div
+          aria-hidden="true"
+          className="fixed inset-0 pointer-events-none z-0 bg-slate-950"
+          style={{ opacity: bgStyle.overlayOpacity }}
+        />
+      )}
       {/* Toast Feedback */}
       {feedbackMsg && (
         <div
@@ -1855,7 +1917,7 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
         resetKey={`${currentStaff?.idCard || "guest"}-${currentStaff?.dashboardConfigJson || "default"}`}
         onRestoreDefault={handleResetDashboardPrefs}
       >
-      <main className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+      <main className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6 relative z-10">
         {/* Banner Hero */}
         {dashboardPrefs.showBanner && (
         <div className={`bg-gradient-to-r ${getPurchasingBannerClass(dashboardPrefs.themeColor)} text-white p-5 rounded-2xl shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-4`}>
@@ -7073,12 +7135,17 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
           isConnected={nineRouterStatus.connected}
           defaultModel={initialData?.nineRouterConfig?.defaultModel}
           contextSummary={chatbotContextSummary}
+          currentPrefs={{
+            bgPreset: dashboardPrefs.bgPreset,
+            themeColor: dashboardPrefs.themeColor,
+          }}
           quickPrompts={[
             "Vendor mana saja yang menawarkan harga bahan baku termurah?",
             "PO mana saja yang status pembayarannya belum lunas?",
-            "Buatkan ringkasan aktivitas pengadaan dan PR dari gudang.",
+            "Ganti background dashboard menjadi gelap untuk akun saya",
           ]}
           onOpenSettings={() => setShowNineRouterModal(true)}
+          onApplyDashboardAction={handleChatbotDashboardAction}
         />
       )}
 

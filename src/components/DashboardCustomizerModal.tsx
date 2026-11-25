@@ -7,13 +7,17 @@ import {
   CheckCircle2,
   Eye,
   EyeOff,
+  ImagePlus,
   LayoutDashboard,
   Palette,
   RotateCcw,
   ShieldCheck,
+  Trash2,
   X,
 } from "lucide-react";
 import {
+  BACKGROUND_PRESET_OPTIONS,
+  DashboardBgPreset,
   PURCHASING_STAT_LABELS,
   PurchasingDashboardPrefs,
   PurchasingStatKey,
@@ -45,6 +49,44 @@ const TAB_OPTIONS: Array<{ key: PurchasingTabKey; label: string }> = [
   { key: "history", label: "4. Riwayat Aktivitas" },
 ];
 
+function compressImageToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Gagal membaca file gambar."));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Format gambar tidak valid."));
+      img.onload = () => {
+        const maxDim = 1280;
+        let width = img.width;
+        let height = img.height;
+        if (width > maxDim || height > maxDim) {
+          const ratio = Math.min(maxDim / width, maxDim / height);
+          width = Math.max(1, Math.round(width * ratio));
+          height = Math.max(1, Math.round(height * ratio));
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          reject(new Error("Canvas tidak tersedia."));
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        const compressed = canvas.toDataURL("image/jpeg", 0.78);
+        if (compressed.length > 340000) {
+          resolve(canvas.toDataURL("image/jpeg", 0.55));
+        } else {
+          resolve(compressed);
+        }
+      };
+      img.src = String(reader.result || "");
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 export default function DashboardCustomizerModal({
   userName,
   userIdCard,
@@ -60,6 +102,7 @@ export default function DashboardCustomizerModal({
   }));
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [confirmReset, setConfirmReset] = useState<boolean>(false);
+  const [bgError, setBgError] = useState<string>("");
 
   const isCustom = isPurchasingPrefsCustomized(draft);
 
@@ -82,6 +125,28 @@ export default function DashboardCustomizerModal({
         [key]: !prev.visibleStatKeys[key],
       },
     }));
+  };
+
+  const handleUploadBgImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setBgError("");
+    if (file.size > 5 * 1024 * 1024) {
+      setBgError("Ukuran file terlalu besar (maks 5 MB sebelum kompresi).");
+      e.target.value = "";
+      return;
+    }
+    try {
+      const dataUrl = await compressImageToDataUrl(file);
+      setDraft((p) => ({
+        ...p,
+        bgPreset: "custom",
+        bgImageData: dataUrl,
+      }));
+    } catch (err: unknown) {
+      setBgError(err instanceof Error ? err.message : "Gagal memproses gambar background.");
+    }
+    e.target.value = "";
   };
 
   const handleSaveClick = async () => {
@@ -123,7 +188,7 @@ export default function DashboardCustomizerModal({
             )}
           </div>
           <h3 className="text-lg font-bold text-slate-900">
-            Atur Tampilan &amp; Restore Default
+            Atur Background, Tampilan &amp; Restore Default
           </h3>
           <div className="mt-2 bg-emerald-50 border border-emerald-200 rounded-xl p-2.5 flex items-start gap-2 text-xs text-emerald-900">
             <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
@@ -134,6 +199,111 @@ export default function DashboardCustomizerModal({
         </div>
 
         <div className="space-y-4 text-xs">
+          {/* 0. Background Halaman Utama Dashboard */}
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2.5">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <p className="font-bold text-slate-800 flex items-center gap-1.5">
+                <ImagePlus className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Background Halaman Dashboard</span>
+              </p>
+              <label className="inline-flex items-center gap-1.5 text-[11px] text-slate-600 font-semibold cursor-pointer">
+                <span>Warna Bebas:</span>
+                <input
+                  type="color"
+                  value={draft.bgCustomColor || "#0f172a"}
+                  onChange={(e) =>
+                    setDraft((p) => ({
+                      ...p,
+                      bgPreset: "custom",
+                      bgCustomColor: e.target.value,
+                      bgImageData: "",
+                    }))
+                  }
+                  className="w-6 h-6 rounded border border-slate-300 cursor-pointer bg-white p-0"
+                  title="Pilih warna background kustom"
+                />
+              </label>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+              {BACKGROUND_PRESET_OPTIONS.map((opt) => {
+                const active = draft.bgPreset === opt.key && !draft.bgImageData;
+                return (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() =>
+                      setDraft((p) => ({
+                        ...p,
+                        bgPreset: opt.key as DashboardBgPreset,
+                        bgImageData: "",
+                      }))
+                    }
+                    className={`flex items-center gap-2 px-2.5 py-2 rounded-lg border text-[11px] font-semibold cursor-pointer transition ${
+                      active
+                        ? "border-emerald-600 bg-emerald-50 text-emerald-900"
+                        : "border-slate-200 bg-white hover:bg-slate-100 text-slate-700"
+                    }`}
+                  >
+                    <span className={`w-3.5 h-3.5 rounded-full border shrink-0 ${opt.swatchClass}`} />
+                    <span className="truncate">{opt.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Custom Image Wallpaper Upload */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1 border-t border-slate-200/80">
+              <div className="flex items-center gap-2 flex-wrap">
+                <label className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg text-[11px] font-bold cursor-pointer transition">
+                  <ImagePlus className="w-3.5 h-3.5" />
+                  <span>{draft.bgImageData ? "Ganti Gambar Background" : "Upload Gambar (JPG/PNG/WebP)"}</span>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    onChange={(e) => void handleUploadBgImage(e)}
+                    className="hidden"
+                  />
+                </label>
+                {draft.bgImageData && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setDraft((p) => ({
+                        ...p,
+                        bgImageData: "",
+                        bgPreset: p.bgCustomColor ? "custom" : "default",
+                      }))
+                    }
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-[11px] font-semibold cursor-pointer"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    <span>Hapus Gambar</span>
+                  </button>
+                )}
+              </div>
+
+              {draft.bgImageData && (
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-semibold text-slate-600 whitespace-nowrap">
+                    Overlay: {draft.bgOverlayOpacity}%
+                  </span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={85}
+                    value={draft.bgOverlayOpacity}
+                    onChange={(e) =>
+                      setDraft((p) => ({ ...p, bgOverlayOpacity: Number(e.target.value) }))
+                    }
+                    className="w-24 accent-emerald-600 cursor-pointer"
+                  />
+                </div>
+              )}
+            </div>
+            {bgError && <p className="text-[11px] text-rose-600 font-semibold">{bgError}</p>}
+          </div>
+
           {/* 1. Tema & Tab Awal */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
