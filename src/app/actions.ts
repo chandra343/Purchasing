@@ -1267,11 +1267,14 @@ export async function saveNineRouterConfig(data: {
   try {
     const existing = await getRawNineRouterConfig();
     const { apiV1Url } = normalizeNineRouterUrls(data.baseUrl);
+    const sameEndpoint = apiV1Url === normalizeNineRouterUrls(existing.baseUrl).apiV1Url;
     const nextApiKey = data.clearApiKey
       ? null
       : data.apiKey?.trim()
         ? data.apiKey.trim()
-        : existing.apiKey;
+        : sameEndpoint
+          ? existing.apiKey
+          : null;
 
     await prisma.nineRouterConfig.upsert({
       where: { id: "default" },
@@ -1295,7 +1298,7 @@ export async function saveNineRouterConfig(data: {
     await logActivity({
       type: "AI_ROUTER_CONFIG",
       title: "Konfigurasi 9Router AI Gateway",
-      description: `Endpoint 9Router diperbarui ke ${apiV1Url} (Status integrasi: ${
+      description: `Endpoint AI diperbarui ke ${apiV1Url} (Status integrasi: ${
         data.isEnabled ? "Aktif" : "Nonaktif"
       }, Default Model: ${data.defaultModel?.trim() || "Auto"}).`,
       actor: "Tim Purchasing",
@@ -1307,7 +1310,7 @@ export async function saveNineRouterConfig(data: {
     revalidatePath("/");
     return {
       success: true,
-      message: "Konfigurasi 9Router AI Gateway berhasil disimpan!",
+      message: "Konfigurasi AI Gateway berhasil disimpan!",
       config,
     };
   } catch (err: any) {
@@ -1318,11 +1321,17 @@ export async function saveNineRouterConfig(data: {
 export async function testNineRouterConnection(data?: {
   baseUrl?: string;
   apiKey?: string;
+  clearApiKey?: boolean;
+  model?: string;
+  verifyUsable?: boolean;
 }) {
   return await checkNineRouterHealth({
     baseUrl: data?.baseUrl,
     apiKey: data?.apiKey,
-    persistStatus: !data?.baseUrl,
+    clearApiKey: data?.clearApiKey,
+    model: data?.model,
+    persistStatus: !data?.baseUrl && !data?.clearApiKey,
+    verifyUsable: data?.verifyUsable !== false,
   });
 }
 

@@ -53,25 +53,41 @@ export default function NineRouterChatbot({
   };
 
   useEffect(() => {
-    if (!isOpen || availableModels.length > 0) return;
-    fetch("/api/ai/models")
+    if (!isOpen) return;
+    let active = true;
+    fetch("/api/ai/models?verify=0")
       .then((r) => r.json())
-      .then((d: { success?: boolean; defaultModel?: string; models?: Array<{ id?: string }> }) => {
-        if (Array.isArray(d?.models)) {
-          const ids = d.models
+      .then(
+        (d: {
+          defaultModel?: string;
+          recommendedModel?: string;
+          usableModels?: Array<{ id?: string }>;
+          models?: Array<{ id?: string }>;
+        }) => {
+          if (!active) return;
+          const source =
+            Array.isArray(d?.usableModels) && d.usableModels.length > 0
+              ? d.usableModels
+              : Array.isArray(d?.models)
+                ? d.models
+                : [];
+          const ids = source
             .map((m) => m.id)
             .filter((id): id is string => Boolean(id));
           setAvailableModels(ids.slice(0, 60));
           setSelectedModel((prev) => {
-            if (prev) return prev;
+            if (prev && ids.includes(prev)) return prev;
             if (d.defaultModel) return d.defaultModel;
-            const freeOc = ids.find((id) => id.startsWith("oc/") && id.endsWith("-free"));
-            return freeOc || ids[0] || "";
+            if (d.recommendedModel) return d.recommendedModel;
+            return ids[0] || prev || "";
           });
         }
-      })
+      )
       .catch(() => {});
-  }, [isOpen, availableModels.length]);
+    return () => {
+      active = false;
+    };
+  }, [isOpen, defaultModel, isConnected]);
 
   useEffect(() => {
     if (isOpen) {
@@ -153,7 +169,7 @@ export default function NineRouterChatbot({
           id: nextMsgId("e"),
           role: "assistant",
           content: msg,
-          hint: "Pastikan server 9Router dan bridge API /api/ai/chat aktif.",
+          hint: "Pastikan server AI / 9Router dan bridge API /api/ai/chat aktif.",
           isError: true,
         },
       ]);
@@ -200,7 +216,7 @@ export default function NineRouterChatbot({
                 className={`w-2 h-2 rounded-full shrink-0 ${
                   isConnected ? "bg-emerald-400" : "bg-amber-300"
                 }`}
-                title={isConnected ? "9Router Terhubung" : "Perlu cek koneksi 9Router"}
+                title={isConnected ? "AI Gateway Terhubung" : "Perlu cek koneksi AI"}
               />
             </div>
             <p className="text-[10px] text-violet-100/90 flex items-center gap-1 truncate">
@@ -223,7 +239,7 @@ export default function NineRouterChatbot({
             type="button"
             onClick={onOpenSettings}
             className="p-1.5 rounded-lg hover:bg-white/15 text-white/85 hover:text-white cursor-pointer transition"
-            title="Pengaturan 9Router & API Key"
+            title="Pengaturan Base URL, API Key & Auto-Detect Model AI"
           >
             <Settings className="w-3.5 h-3.5" />
           </button>
@@ -242,7 +258,7 @@ export default function NineRouterChatbot({
       {availableModels.length > 0 && (
         <div className="bg-slate-50 border-b border-slate-200 px-3 py-1.5 flex items-center justify-between gap-2 shrink-0">
           <span className="text-[10px] font-semibold text-slate-500 whitespace-nowrap">
-            Model 9Router:
+            Model Aktif:
           </span>
           <select
             value={selectedModel}
@@ -266,7 +282,7 @@ export default function NineRouterChatbot({
             <div className="bg-white border border-slate-200 rounded-xl p-3 text-xs text-slate-600 leading-relaxed shadow-2xs">
               <div className="font-bold text-slate-800 flex items-center gap-1.5 mb-1">
                 <Sparkles className="w-3.5 h-3.5 text-violet-600" />
-                <span>Terhubung ke 9Router Gateway</span>
+                <span>Terhubung ke AI Gateway</span>
               </div>
               Tanyakan apa saja mengenai data <b>{projectLabel}</b> secara langsung atau pilih pertanyaan cepat di bawah:
             </div>
@@ -309,7 +325,7 @@ export default function NineRouterChatbot({
                       className="inline-flex items-center gap-1 bg-rose-600 hover:bg-rose-700 text-white font-bold px-2.5 py-1 rounded-lg text-[10px] cursor-pointer"
                     >
                       <Settings className="w-3 h-3" />
-                      <span>Buka Pengaturan 9Router</span>
+                      <span>Buka Pengaturan & Detect Model</span>
                     </button>
                   </div>
                 )}
@@ -327,7 +343,7 @@ export default function NineRouterChatbot({
           <div className="flex justify-start">
             <div className="bg-white border border-slate-200 rounded-2xl rounded-bl-sm px-3.5 py-2.5 text-xs text-slate-500 flex items-center gap-2 shadow-2xs">
               <span className="w-2 h-2 rounded-full bg-violet-500 animate-bounce" />
-              <span>Sedang memproses via 9Router...</span>
+              <span>Sedang memproses...</span>
             </div>
           </div>
         )}
@@ -352,7 +368,7 @@ export default function NineRouterChatbot({
               void sendMessage();
             }
           }}
-          placeholder="Tanya AI via 9Router..."
+          placeholder="Tanya AI..."
           className="flex-1 resize-none bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs focus:bg-white focus:ring-2 focus:ring-violet-500 outline-none max-h-24"
         />
         <button

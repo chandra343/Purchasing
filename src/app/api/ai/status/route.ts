@@ -4,7 +4,7 @@ import { aiCorsHeaders, checkNineRouterHealth } from "@/lib/nineRouter";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const status = await checkNineRouterHealth({ persistStatus: true });
+  const status = await checkNineRouterHealth({ persistStatus: true, verifyUsable: false });
   return NextResponse.json(
     {
       service: "Purchasing",
