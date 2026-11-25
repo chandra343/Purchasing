@@ -28,6 +28,37 @@ import {
   normalizeNineRouterUrls,
 } from "@/lib/nineRouter";
 import { DEFAULT_PURCHASING_PREFS, parsePurchasingPrefs } from "@/lib/dashboardPrefs";
+import {
+  clearUserSessionCookie,
+  getVerifiedUserSession,
+  setUserSessionCookie,
+} from "@/lib/session";
+
+async function assertSelfStaffSession(requestedIdCard: string) {
+  const session = await getVerifiedUserSession();
+  if (!session) {
+    return {
+      ok: false as const,
+      requiresRelogin: true,
+      error:
+        "Sesi keamanan login Anda belum terverifikasi. Silakan Log Out lalu masuk kembali dengan ID Card Anda.",
+    };
+  }
+  const cleanRequested = requestedIdCard.trim().toUpperCase();
+  if (cleanRequested && cleanRequested !== session.idCard) {
+    return {
+      ok: false as const,
+      requiresRelogin: false,
+      error: `Akses dibatasi: Anda login sebagai ${session.idCard} dan hanya berwenang mengubah dashboard akun Anda sendiri.`,
+    };
+  }
+  return { ok: true as const, session };
+}
+
+export async function logoutStaffSession() {
+  await clearUserSessionCookie();
+  return { success: true };
+}
 
 // 1. Autentikasi Menggunakan Nomor ID Card Karyawan Purchasing
 export async function loginStaffWithIdCard(idCard: string) {
@@ -60,6 +91,12 @@ export async function loginStaffWithIdCard(idCard: string) {
       error: `Nomor ID Card "${cleanId}" tidak ditemukan. Pastikan Anda memasukkan nomor ID Card resmi staf Purchasing.`,
     };
   }
+
+  await setUserSessionCookie({
+    idCard: staff.idCard,
+    userId: staff.id,
+    role: staff.role,
+  });
 
   return {
     success: true,
@@ -1143,9 +1180,13 @@ export async function updateStaffTelegram(
   }
 ) {
   try {
-    const cleanId = idCard.trim().toUpperCase();
-    const staff = await prisma.purchasingStaff.findFirst({
-      where: { idCard: cleanId },
+    const auth = await assertSelfStaffSession(idCard);
+    if (!auth.ok) {
+      return { success: false, requiresRelogin: auth.requiresRelogin, error: auth.error };
+    }
+    const cleanId = auth.session.idCard;
+    const staff = await prisma.purchasingStaff.findUnique({
+      where: { id: auth.session.userId },
     });
     if (!staff) {
       return { success: false, error: `Staf Purchasing dengan ID Card "${idCard}" tidak ditemukan.` };
@@ -1338,10 +1379,14 @@ export async function testNineRouterConnection(data?: {
 // 11. Personalisasi & Restore Default Dashboard Khusus Per Staf (Berdasarkan ID Card)
 export async function saveStaffDashboardPrefs(idCard: string, prefsJson: string) {
   try {
-    const cleanId = idCard.trim().toUpperCase();
-    const staff = await prisma.purchasingStaff.findFirst({ where: { idCard: cleanId } });
+    const auth = await assertSelfStaffSession(idCard);
+    if (!auth.ok) {
+      return { success: false, requiresRelogin: auth.requiresRelogin, error: auth.error };
+    }
+    const cleanId = auth.session.idCard;
+    const staff = await prisma.purchasingStaff.findUnique({ where: { id: auth.session.userId } });
     if (!staff) {
-      return { success: false, error: `Staf dengan ID Card "${idCard}" tidak ditemukan.` };
+      return { success: false, error: `Staf dengan ID Card "${cleanId}" tidak ditemukan.` };
     }
     const normalized = parsePurchasingPrefs(prefsJson);
     const serialized = JSON.stringify(normalized);
@@ -1366,10 +1411,14 @@ export async function saveStaffDashboardPrefs(idCard: string, prefsJson: string)
 
 export async function resetStaffDashboardPrefs(idCard: string) {
   try {
-    const cleanId = idCard.trim().toUpperCase();
-    const staff = await prisma.purchasingStaff.findFirst({ where: { idCard: cleanId } });
+    const auth = await assertSelfStaffSession(idCard);
+    if (!auth.ok) {
+      return { success: false, requiresRelogin: auth.requiresRelogin, error: auth.error };
+    }
+    const cleanId = auth.session.idCard;
+    const staff = await prisma.purchasingStaff.findUnique({ where: { id: auth.session.userId } });
     if (!staff) {
-      return { success: false, error: `Staf dengan ID Card "${idCard}" tidak ditemukan.` };
+      return { success: false, error: `Staf dengan ID Card "${cleanId}" tidak ditemukan.` };
     }
     await prisma.purchasingStaff.update({
       where: { id: staff.id },

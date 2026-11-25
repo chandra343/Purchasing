@@ -10,6 +10,7 @@ import {
   RotateCcw,
   Send,
   Settings,
+  ShieldAlert,
   Sparkles,
   X,
 } from "lucide-react";
@@ -35,6 +36,7 @@ interface ChatMessage {
   content: string;
   model?: string;
   isError?: boolean;
+  blockedReason?: string;
   hint?: string;
   appliedActionLabel?: string;
   suggestBackgroundActions?: boolean;
@@ -44,6 +46,9 @@ interface NineRouterChatbotProps {
   projectLabel: "Gudang (WMS)" | "Purchasing";
   isConnected: boolean;
   defaultModel?: string;
+  userIdCard?: string;
+  userName?: string;
+  userRole?: string;
   contextSummary: string;
   quickPrompts: string[];
   currentPrefs?: {
@@ -75,6 +80,34 @@ const QUICK_BG_CHIPS: Array<{ label: string; action: ChatbotDashboardAction }> =
   { label: "Upload Gambar...", action: { type: "OPEN_CUSTOMIZER" } },
   { label: "Reset Default", action: { type: "RESET_DEFAULT" } },
 ];
+
+const FORBIDDEN_SCOPE_RE =
+  /\b(hapus\s+(?:stok|produk|barang|gudang|po|catatan|user|akun|data)|(?:ubah|edit|kurangi|tambah)\s+(?:stok|qty|jumlah\s+barang|harga|role|jabatan|user|akun)|buat\s+(?:po|id\s*card|user|akun)|setujui\s+po|approve\s+po|api\s*key|bot\s*telegram|token\s*telegram|9router\s*key|password|session\s*secret|\.env|prisma|database|sqlite|source\s*code|kode\s*sumber|akses\s*server|terminal|shell|semua\s*user|user\s*lain|akun\s*lain|orang\s*lain|karyawan\s*lain|staf\s*lain|milik\s*orang|dashboard\s*lain|dashboard\s*orang)\b/i;
+
+function detectOutOfScopeAuthorityAttempt(
+  userText: string,
+  currentUserIdCard?: string
+): string | null {
+  const cleanSelf = (currentUserIdCard || "").trim().toUpperCase();
+  if (!cleanSelf) {
+    return "Silakan login terlebih dahulu menggunakan ID Card Anda sebelum menerapkan perubahan dashboard.";
+  }
+
+  // Detect mentions of explicit ID cards belonging to someone else (e.g. WH-002, PUR-003)
+  const idCardMatches = userText.toUpperCase().match(/\b(?:WH|PUR|USR|STF|EMP)-\d{2,5}\b/g);
+  if (idCardMatches) {
+    const foreignId = idCardMatches.find((m) => m !== cleanSelf);
+    if (foreignId) {
+      return `Akses dibatasi: Anda (${cleanSelf}) tidak berwenang mengakses atau mengubah dashboard milik akun ${foreignId}. Anda hanya dapat mengubah dashboard milik Anda sendiri.`;
+    }
+  }
+
+  if (FORBIDDEN_SCOPE_RE.test(userText)) {
+    return `Akses dibatasi: Wewenang Chatbot Anda (${cleanSelf}) hanya terbatas pada dashboard Anda dan pengaturan tampilan/background pribadi Anda sendiri (tidak dapat menyentuh akun user lain, mutasi stok/PO, database, atau pengaturan sistem).`;
+  }
+
+  return null;
+}
 
 function sanitizeParsedAction(raw: unknown): ChatbotDashboardAction | null {
   if (!raw || typeof raw !== "object") return null;
@@ -226,6 +259,9 @@ export default function NineRouterChatbot({
   projectLabel,
   isConnected,
   defaultModel,
+  userIdCard,
+  userName,
+  userRole,
   contextSummary,
   quickPrompts,
   currentPrefs,
@@ -292,25 +328,29 @@ export default function NineRouterChatbot({
   const executeDashboardAction = async (
     action: ChatbotDashboardAction
   ): Promise<{ success: boolean; message?: string }> => {
-    if (!onApplyDashboardAction) {
-      return { success: false, message: "Aksi dashboard belum tersedia." };
+    if (!onApplyDashboardAction || !userIdCard) {
+      return {
+        success: false,
+        message: "Aksi dashboard hanya tersedia saat Anda sudah login dengan ID Card.",
+      };
     }
     return await onApplyDashboardAction(action);
   };
 
   const handleChipAction = async (label: string, action: ChatbotDashboardAction) => {
     const res = await executeDashboardAction(action);
-    if (res.success) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: nextMsgId("sys"),
-          role: "assistant",
-          content: res.message || `Pengaturan "${label}" berhasil diterapkan ke dashboard Anda.`,
-          appliedActionLabel: res.message || `Diterapkan: ${label}`,
-        },
-      ]);
-    }
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: nextMsgId("sys"),
+        role: "assistant",
+        content: res.success
+          ? res.message || `Pengaturan "${label}" berhasil diterapkan ke dashboard akun ${userIdCard}.`
+          : res.message || "Gagal menerapkan pengaturan dashboard.",
+        appliedActionLabel: res.success ? res.message || `Diterapkan: ${label}` : undefined,
+        blockedReason: !res.success ? res.message : undefined,
+      },
+    ]);
   };
 
   const sendMessage = async (textOverride?: string) => {
@@ -326,31 +366,48 @@ export default function NineRouterChatbot({
     const nextHistory = [...messages, userMsg];
     setMessages(nextHistory);
     if (!textOverride) setInputValue("");
+
+    // Hard boundary check BEFORE contacting LLM or executing any action
+    const boundaryViolation = detectOutOfScopeAuthorityAttempt(text, userIdCard);
+    if (boundaryViolation) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: nextMsgId("blk"),
+          role: "assistant",
+          content: boundaryViolation,
+          blockedReason: `Di luar wewenang akun ${userIdCard || "-"}`,
+        },
+      ]);
+      return;
+    }
+
     setIsSending(true);
 
     try {
       const systemPrompt = [
         `Anda adalah Asisten AI resmi untuk sistem ${projectLabel}.`,
+        "BATASAN WEWENANG MUTLAK (SECURITY BOUNDARY):",
+        `- Akun yang sedang aktif login: ${userName || "User"} | ID Card: ${userIdCard || "-"} | Role: ${userRole || "STAFF"}.`,
+        `- Anda HANYA boleh membantu seputar data Dashboard saat ini dan HANYA berwenang mengubah tampilan/background dashboard MILIK AKUN ${userIdCard || "INI"} SAJA.`,
+        "- DILARANG KERAS mengakses atau mengubah dashboard/data milik user lain, dilarang mengubah/menghapus data stok/PO/produk/gudang, dilarang mengakses/mengubah API Key 9Router, Bot Telegram, database, file server, atau kode program.",
+        "- Jika user mencoba meminta akses atau perubahan di luar wewenang tersebut, TOLAK dengan sopan dan JANGAN keluarkan tag [APP_ACTION].",
+        "",
         "INFORMASI ARSITEKTUR NYATA (WAJIB DIPATUHI):",
-        `- Aplikasi ini SUDAH dibangun menggunakan Next.js 16 + React 19 + Tailwind CSS + Prisma/SQLite (BUKAN HTML statis, Vue, atau Laravel).`,
+        "- Aplikasi ini SUDAH dibangun menggunakan Next.js 16 + React 19 + Tailwind CSS + Prisma/SQLite (BUKAN HTML statis, Vue, atau Laravel).",
         "- DILARANG menanyakan framework atau stack aplikasi, dan DILARANG menulis tutorial HTML/CSS/JS mentah.",
         "- Fitur ganti background & personalisasi dashboard per akun ID Card SUDAH TERSEDIA di aplikasi ini (termasuk preset terang/gelap/samudra biru/hijau zamrud/ungu/senja, warna hex kustom, upload gambar JPG/PNG/WebP + slider overlay, dan Restore Default).",
-        `Preferensi user saat ini: bgPreset=${currentPrefs?.bgPreset || "default"}, themeColor=${currentPrefs?.themeColor || "default"}.`,
+        `Preferensi user ${userIdCard || "-"} saat ini: bgPreset=${currentPrefs?.bgPreset || "default"}, themeColor=${currentPrefs?.themeColor || "default"}.`,
         "",
-        "KEMAMPUAN EKSEKUSI LANGSUNG KE DASHBOARD:",
-        "Anda dapat LANGSUNG mengubah tampilan/background dashboard user dengan menyertakan TEPAT 1 blok tag berikut di akhir balasan Anda:",
+        "KEMAMPUAN EKSEKUSI LANGSUNG KE DASHBOARD MILIK USER INI:",
+        "Anda dapat LANGSUNG mengubah tampilan/background dashboard milik user yang sedang login dengan menyertakan TEPAT 1 blok tag berikut di akhir balasan:",
         '1. Ubah background preset: [APP_ACTION]{"type":"UPDATE_PREFS","patch":{"bgPreset":"dark"}}[/APP_ACTION] (nilai valid bgPreset: "default", "dark", "ocean", "emerald", "violet", "sunset")',
         '2. Ubah background warna hex: [APP_ACTION]{"type":"UPDATE_PREFS","patch":{"bgPreset":"custom","bgCustomColor":"#1e293b"}}[/APP_ACTION]',
         '3. Ubah tema banner: [APP_ACTION]{"type":"UPDATE_PREFS","patch":{"themeColor":"emerald"}}[/APP_ACTION]',
         '4. Buka panel Upload Gambar & Pengaturan Background lengkap: [APP_ACTION]{"type":"OPEN_CUSTOMIZER"}[/APP_ACTION]',
-        '5. Restore/Reset tampilan ke default: [APP_ACTION]{"type":"RESET_DEFAULT"}[/APP_ACTION]',
+        '5. Restore/Reset tampilan akun ini ke default: [APP_ACTION]{"type":"RESET_DEFAULT"}[/APP_ACTION]',
         "",
-        "ATURAN BALASAN:",
-        "- Jawab dalam Bahasa Indonesia yang ringkas dan jelas.",
-        '- Jika user ingin mengganti background/tema/tampilan atau mengetik "terapkan"/"pakai"/"pasang" terkait background/tampilan, SERTAKAN tag [APP_ACTION]...[/APP_ACTION] agar langsung diterapkan ke layar user.',
-        "- Jika user meminta penambahan modul/fitur coding baru di luar stok/PO/personalisasi tampilan (yang butuh edit kode server & skema Prisma), sampaikan dengan jujur batasannya dan jangan mengarang kode HTML tempelan.",
-        "",
-        "DATA REALTIME PROJECT SAAT INI:",
+        "DATA REALTIME DASHBOARD SAAT INI:",
         contextSummary,
       ].join("\n");
 
@@ -361,7 +418,7 @@ export default function NineRouterChatbot({
           systemPrompt,
           model: selectedModel.trim() || defaultModel || undefined,
           messages: nextHistory
-            .filter((m) => !m.isError)
+            .filter((m) => !m.isError && !m.blockedReason)
             .map((m) => ({ role: m.role, content: m.content })),
         }),
       });
@@ -381,20 +438,22 @@ export default function NineRouterChatbot({
         const effectiveAction = llmAction || inferred.action;
 
         let appliedActionLabel: string | undefined;
+        let blockedReason: string | undefined;
         if (effectiveAction && onApplyDashboardAction) {
           const applied = await executeDashboardAction(effectiveAction);
           if (applied.success) {
             appliedActionLabel =
               applied.message ||
               (effectiveAction.type === "OPEN_CUSTOMIZER"
-                ? "Panel Pengaturan Background & Tampilan dibuka"
+                ? `Panel Pengaturan Background & Tampilan dibuka (${userIdCard})`
                 : effectiveAction.type === "RESET_DEFAULT"
-                  ? "Tampilan dikembalikan ke Default"
-                  : "Perubahan background/tampilan diterapkan");
+                  ? `Tampilan akun ${userIdCard} dikembalikan ke Default`
+                  : `Perubahan background/tampilan diterapkan ke akun ${userIdCard}`);
+          } else {
+            blockedReason = applied.message || "Perubahan dibatasi oleh kontrol akses sesi.";
           }
         }
 
-        // Prevent confusing raw HTML/tutorial dumps if model still tried emitting HTML despite background action
         const containsRawHtmlSnippet = /```html|<div\s+id=["']bg-panel|document\.documentElement/i.test(
           cleanedReply
         );
@@ -411,8 +470,9 @@ export default function NineRouterChatbot({
             content: finalContent,
             model: data.model,
             appliedActionLabel,
+            blockedReason,
             suggestBackgroundActions: Boolean(
-              inferred.isBgTopic || effectiveAction
+              !blockedReason && (inferred.isBgTopic || effectiveAction)
             ),
           },
         ]);
@@ -451,7 +511,7 @@ export default function NineRouterChatbot({
         type="button"
         onClick={() => setIsOpen(true)}
         className="fixed bottom-5 right-5 z-40 inline-flex items-center gap-2 bg-gradient-to-tr from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white px-4 py-3 rounded-full shadow-lg hover:shadow-xl transition-all cursor-pointer active:scale-95 border border-white/20"
-        title={`Buka Asisten AI ${projectLabel} (9Router)`}
+        title={`Buka Asisten AI ${projectLabel} (Khusus Dashboard ${userIdCard || "Anda"})`}
       >
         <div className="relative flex items-center justify-center">
           <MessageSquare className="w-5 h-5" />
@@ -488,7 +548,9 @@ export default function NineRouterChatbot({
             </div>
             <p className="text-[10px] text-violet-100/90 flex items-center gap-1 truncate">
               <Cpu className="w-3 h-3 shrink-0" />
-              <span className="truncate">{selectedModel || "9Router Auto"}</span>
+              <span className="truncate">
+                {selectedModel || "9Router Auto"} • Akun {userIdCard || "Tamu"}
+              </span>
             </p>
           </div>
         </div>
@@ -521,26 +583,31 @@ export default function NineRouterChatbot({
         </div>
       </div>
 
-      {/* Selector Model Ringkas */}
-      {availableModels.length > 0 && (
-        <div className="bg-slate-50 border-b border-slate-200 px-3 py-1.5 flex items-center justify-between gap-2 shrink-0">
-          <span className="text-[10px] font-semibold text-slate-500 whitespace-nowrap">
-            Model Aktif:
-          </span>
-          <select
-            value={selectedModel}
-            onChange={(e) => setSelectedModel(e.target.value)}
-            className="flex-1 min-w-0 bg-white border border-slate-200 rounded-md px-2 py-1 text-[11px] font-mono text-slate-700 outline-none focus:border-violet-400 cursor-pointer"
-          >
-            <option value="">Otomatis (Default)</option>
-            {availableModels.map((id) => (
-              <option key={id} value={id}>
-                {id}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
+      {/* Selector Model Ringkas + Scope Info */}
+      <div className="bg-slate-50 border-b border-slate-200 px-3 py-1.5 space-y-1 shrink-0">
+        {availableModels.length > 0 && (
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] font-semibold text-slate-500 whitespace-nowrap">
+              Model Aktif:
+            </span>
+            <select
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+              className="flex-1 min-w-0 bg-white border border-slate-200 rounded-md px-2 py-1 text-[11px] font-mono text-slate-700 outline-none focus:border-violet-400 cursor-pointer"
+            >
+              <option value="">Otomatis (Default)</option>
+              {availableModels.map((id) => (
+                <option key={id} value={id}>
+                  {id}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+        <p className="text-[10px] text-slate-500 truncate">
+          Wewenang: hanya baca dashboard &amp; ubah tampilan akun <b>{userIdCard || "-"}</b> saja.
+        </p>
+      </div>
 
       {/* Body Percakapan */}
       <div className="flex-1 overflow-y-auto p-3.5 space-y-3 bg-slate-50/60 min-h-[260px]">
@@ -549,9 +616,9 @@ export default function NineRouterChatbot({
             <div className="bg-white border border-slate-200 rounded-xl p-3 text-xs text-slate-600 leading-relaxed shadow-2xs">
               <div className="font-bold text-slate-800 flex items-center gap-1.5 mb-1">
                 <Sparkles className="w-3.5 h-3.5 text-violet-600" />
-                <span>Terhubung ke AI Gateway &amp; Kontrol Dashboard</span>
+                <span>Asisten Dashboard Pribadi ({userIdCard || "-"})</span>
               </div>
-              Tanyakan data <b>{projectLabel}</b> atau minta langsung ganti background/tema dashboard Anda (misal: &ldquo;ganti background gelap&rdquo;).
+              Hanya berwenang mengakses informasi dashboard ini dan mengubah background/tema milik akun Anda sendiri.
             </div>
 
             <div className="space-y-1.5">
@@ -589,11 +656,20 @@ export default function NineRouterChatbot({
                 className={`max-w-[88%] rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed shadow-2xs ${
                   m.role === "user"
                     ? "bg-indigo-600 text-white rounded-br-sm"
-                    : m.isError
-                      ? "bg-rose-50 border border-rose-200 text-rose-900 rounded-bl-sm"
-                      : "bg-white border border-slate-200 text-slate-800 rounded-bl-sm"
+                    : m.blockedReason
+                      ? "bg-amber-50 border border-amber-300 text-amber-950 rounded-bl-sm"
+                      : m.isError
+                        ? "bg-rose-50 border border-rose-200 text-rose-900 rounded-bl-sm"
+                        : "bg-white border border-slate-200 text-slate-800 rounded-bl-sm"
                 }`}
               >
+                {m.blockedReason && (
+                  <div className="mb-1.5 flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-amber-800">
+                    <ShieldAlert className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                    <span>Batas Wewenang: {m.blockedReason}</span>
+                  </div>
+                )}
+
                 <div className="whitespace-pre-wrap break-words">{m.content}</div>
 
                 {m.appliedActionLabel && (
@@ -632,7 +708,7 @@ export default function NineRouterChatbot({
                   </div>
                 )}
 
-                {m.model && !m.isError && (
+                {m.model && !m.isError && !m.blockedReason && (
                   <div className="mt-1.5 text-[9px] text-slate-400 font-mono">
                     via {m.model}
                   </div>
@@ -671,7 +747,7 @@ export default function NineRouterChatbot({
               void sendMessage();
             }
           }}
-          placeholder="Tanya AI atau ketik 'ganti background gelap'..."
+          placeholder={`Tanya AI atau ubah background (${userIdCard || "Anda"})...`}
           className="flex-1 resize-none bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs focus:bg-white focus:ring-2 focus:ring-violet-500 outline-none max-h-24"
         />
         <button

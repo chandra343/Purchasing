@@ -21,6 +21,7 @@ import {
   testNineRouterConnection,
   saveStaffDashboardPrefs,
   resetStaffDashboardPrefs,
+  logoutStaffSession,
 } from "@/app/actions";
 import {
   DEFAULT_PURCHASING_PREFS,
@@ -1238,6 +1239,7 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
 
   // Handler Logout
   const handleLogout = () => {
+    void logoutStaffSession();
     setCurrentStaff(null);
     setShowStaffDropdown(false);
     setActiveTab(DEFAULT_PURCHASING_PREFS.defaultTab);
@@ -1260,6 +1262,9 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
       showMessage("success", res.message || "Tampilan dashboard Anda berhasil disimpan!");
       return true;
     }
+    if ((res as { requiresRelogin?: boolean }).requiresRelogin) {
+      handleLogout();
+    }
     showMessage("error", res.error || "Gagal menyimpan tampilan dashboard.");
     return false;
   };
@@ -1278,6 +1283,9 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
       showMessage("success", res.message || "Tampilan dashboard dikembalikan ke Default!");
       return true;
     }
+    if ((res as { requiresRelogin?: boolean }).requiresRelogin) {
+      handleLogout();
+    }
     showMessage("error", res.error || "Gagal mengembalikan tampilan default.");
     return false;
   };
@@ -1285,17 +1293,26 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
   const handleChatbotDashboardAction = async (
     action: ChatbotDashboardAction
   ): Promise<{ success: boolean; message?: string }> => {
+    if (!currentStaff?.idCard) {
+      return {
+        success: false,
+        message: "Akses dibatasi: Anda harus login dengan ID Card untuk mengubah dashboard pribadi.",
+      };
+    }
     if (action.type === "OPEN_CUSTOMIZER") {
       setShowCustomizerModal(true);
-      return { success: true, message: "Panel Pengaturan Background & Tampilan dibuka" };
+      return {
+        success: true,
+        message: `Panel Pengaturan Background & Tampilan dibuka (${currentStaff.idCard})`,
+      };
     }
     if (action.type === "RESET_DEFAULT") {
       const ok = await handleResetDashboardPrefs();
       return {
         success: ok,
         message: ok
-          ? "Background & tampilan dikembalikan ke Default"
-          : "Gagal mengembalikan ke Default",
+          ? `Background & tampilan akun ${currentStaff.idCard} dikembalikan ke Default`
+          : "Gagal mengembalikan ke Default (silakan masuk ulang dengan ID Card bila diminta)",
       };
     }
     const patch = action.patch || {};
@@ -1316,8 +1333,8 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
     return {
       success: ok,
       message: ok
-        ? `Tampilan (${nextPrefs.bgPreset}) diterapkan untuk akun ${currentStaff?.name || "Anda"}`
-        : "Gagal menerapkan tampilan dashboard",
+        ? `Tampilan (${nextPrefs.bgPreset}) diterapkan untuk akun ${currentStaff.name} (${currentStaff.idCard})`
+        : "Gagal menerapkan tampilan dashboard (silakan masuk ulang dengan ID Card bila diminta)",
     };
   };
 
@@ -7134,6 +7151,9 @@ export default function PurchasingClient({ initialData }: { initialData: any }) 
           projectLabel="Purchasing"
           isConnected={nineRouterStatus.connected}
           defaultModel={initialData?.nineRouterConfig?.defaultModel}
+          userIdCard={currentStaff?.idCard}
+          userName={currentStaff?.name}
+          userRole={currentStaff?.role}
           contextSummary={chatbotContextSummary}
           currentPrefs={{
             bgPreset: dashboardPrefs.bgPreset,
